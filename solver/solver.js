@@ -675,7 +675,6 @@ export const buildSolverContext = ({
   }
   if (normalizedFilters.excludeSpecial) {
     normalizedPlayers = normalizedPlayers.filter((player) => {
-      if (isUnassignedBypass(player)) return true;
       if (!player?.isSpecial || player?.isTotwOrTots) return true;
       if (player?.id == null) return false;
       return lockedSlotPlayerIds.has(String(player.id));
@@ -10691,9 +10690,13 @@ const runPipeline = (inputContext, seed = null, phaseConfig = null) => {
       .map((p) => [String(p.id), p]),
   );
 
-  // Pre-seed squad from occupied field slots so solve/apply stay consistent.
-  // The page layer preserves valid slot items during apply (single-solve flow),
-  // so treating valid occupied slots as pre-seeded avoids overfilling (11 + preserved).
+  const preserveOccupiedSlots = toBooleanSetting(
+    context?.filters?.preserveOccupiedSlots,
+    false,
+  );
+
+  // Pre-seed squad from occupied field slots only when the page layer is going
+  // to preserve occupied items, or when EA marks a slot as locked/non-editable.
   const slotDiag = [];
   for (const slot of context?.squadSlots || []) {
     const item = slot?.item ?? null;
@@ -10719,9 +10722,10 @@ const runPipeline = (inputContext, seed = null, phaseConfig = null) => {
       itemId: idKey,
       concept,
     });
-    // Keep any occupied valid slot, plus explicit lock/brick/non-editable flags.
+    // Keep occupied valid slots only for preserve-mode. Always keep explicit
+    // lock/brick/non-editable flags because those are real slot constraints.
     const keep =
-      isValid === true ||
+      (preserveOccupiedSlots && isValid === true) ||
       isBrick === true ||
       isLocked === true ||
       isEditable === false;
@@ -11313,10 +11317,6 @@ const runPipeline = (inputContext, seed = null, phaseConfig = null) => {
   // Once we have a full squad, clear transient fill locks. Optionally keep
   // preseeded occupied slot players locked for the full solve lifecycle.
   lockedIds.clear();
-  const preserveOccupiedSlots = toBooleanSetting(
-    context?.filters?.preserveOccupiedSlots,
-    false,
-  );
   if (preserveOccupiedSlots && preservedSeedIds.size) {
     for (const id of preservedSeedIds) lockedIds.add(id);
     debugPush?.({

@@ -2,6 +2,18 @@
   "version": 1,
   "releases": [
     {
+      "version": "1.11",
+      "date": "2026-09-18",
+      "headline": "FC27 support",
+      "summary": "AutopilotSBC now works on the FC27 Web App.",
+      "details": [
+        "Updated the extension for the FC27 Web App.",
+        "Fixed player fetching, which returned no players because of a change in how EA returns club and item data.",
+        "Fixed challenge and set images so they load from the current FC content path.",
+        "Updated the extension name and description to FC27."
+      ]
+    },
+    {
       "version": "1.10",
       "date": "2026-05-15",
       "headline": "Smarter solver efficiency and card type controls.",

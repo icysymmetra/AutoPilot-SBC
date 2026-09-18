@@ -518,6 +518,41 @@
     return true;
   };
 
+  const isPlainObject = (value) =>
+    Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+  // FC27 delivers the usable payload under `response` for some EA services
+  // (verified live: Club.search -> { response: { items, retrievedAll } }) while
+  // other services keep it under `data` (verified live: SBC.requestSets ->
+  // { data: { categories, sets } }). Older builds used `data` for everything.
+  // Pick whichever branch actually carries content instead of assuming one.
+  const unwrapObservablePayload = (payload) => {
+    if (!isPlainObject(payload)) return payload ?? null;
+    const hasOwn = (key) =>
+      Object.prototype.hasOwnProperty.call(payload, key) &&
+      payload[key] != null;
+    const responseValue = hasOwn("response") ? payload.response : null;
+    const dataValue = hasOwn("data") ? payload.data : null;
+
+    if (isPlainObject(responseValue) && !isPlainObject(dataValue)) {
+      return responseValue;
+    }
+    if (isPlainObject(dataValue) && !isPlainObject(responseValue)) {
+      return dataValue;
+    }
+    if (!isPlainObject(responseValue) && !isPlainObject(dataValue)) {
+      return payload;
+    }
+    // Both present: prefer whichever holds recognizable collection content.
+    const responseKeys = Object.keys(responseValue);
+    const dataKeys = Object.keys(dataValue);
+    const responseHasCollections = responseKeys.length > 0;
+    const dataHasCollections = dataKeys.length > 0;
+    if (dataHasCollections && !responseHasCollections) return dataValue;
+    if (responseHasCollections && !dataHasCollections) return responseValue;
+    return dataValue;
+  };
+
   const observableToPromise = (observable) =>
     new Promise((resolve) => {
       observable.observe(
@@ -525,7 +560,8 @@
         (observer, { data, error, response, status, success }) => {
           observer.unobserve(this);
           resolve({
-            data: response ?? data,
+            data: unwrapObservablePayload({ data, response }),
+            raw: { data: data ?? null, response: response ?? null },
             error: error?.code,
             status,
             success,
@@ -12390,17 +12426,31 @@
       }
     };
 
-    const getContentHash = () => {
+    // FC27 serves companion assets from a versioned content path
+    // (e.g. /content/<hash>/2027/fut/...). Prefer EA's own asset helper so the
+    // hash and year segment track the live web app instead of hardcoded values.
+    const DEFAULT_CONTENT_HASH = "27A3C9F1-6B2E-4D7A-8C1F-2E9B5A4D6C7E";
+    const DEFAULT_CONTENT_YEAR = "2027";
+
+    const resolveChallengeImageSrc = (assetId) => {
+      if (assetId == null) return null;
+      try {
+        const utils = window.AssetLocationUtils ?? services?.AssetLocationUtils;
+        if (typeof utils?.getSquadBuildingChallengeImageUri === "function") {
+          const uri = utils.getSquadBuildingChallengeImageUri(assetId);
+          if (typeof uri === "string" && uri) return uri;
+        }
+      } catch {}
       try {
         const img = document.querySelector(
           'img[src*="/fut/sbc/companion/challenges/"]',
         );
-        if (img?.src) {
-          const m = img.src.match(/\/content\/([^/]+)\//);
-          if (m) return m[1];
+        const match = img?.src?.match(/\/content\/([^/]+)\/(\d{4})\//);
+        if (match) {
+          return `https://www.ea.com/ea-sports-fc/ultimate-team/web-app/content/${match[1]}/${match[2]}/fut/sbc/companion/challenges/images/sbc_challenge_image_${assetId}.png`;
         }
       } catch {}
-      return "26E4D4D6-8DBB-4A9A-BD99-9C47D3AA341D";
+      return `https://www.ea.com/ea-sports-fc/ultimate-team/web-app/content/${DEFAULT_CONTENT_HASH}/${DEFAULT_CONTENT_YEAR}/fut/sbc/companion/challenges/images/sbc_challenge_image_${assetId}.png`;
     };
 
     const renderChallengePicker = () => {
@@ -12421,8 +12471,6 @@
         return;
       }
 
-      const contentHash = getContentHash();
-
       for (let i = 0; i < challenges.length; i += 1) {
         const challenge = challenges[i];
         const chIdStr = String(challenge?.id);
@@ -12439,8 +12487,9 @@
 
         const img = document.createElement("img");
         img.className = "ea-data-challenge-card__icon";
-        if (challenge?.assetId) {
-          img.src = `https://www.ea.com/ea-sports-fc/ultimate-team/web-app/content/${contentHash}/2026/fut/sbc/companion/challenges/images/sbc_challenge_image_${challenge.assetId}.png`;
+        const challengeImageSrc = resolveChallengeImageSrc(challenge?.assetId);
+        if (challengeImageSrc) {
+          img.src = challengeImageSrc;
         }
         img.alt = name;
 

@@ -27,6 +27,8 @@ The main install source is now the Chrome Web Store.
 
 Install [AutopilotSBC](https://autopilotsbc.vercel.app/) from the [Chrome Web Store](https://chromewebstore.google.com/detail/autopilotsbc-fc26-sbc-sol/gkcjhdebgfhdbkecahbnpmcaobapcfbh?hl=en).
 
+The store listing still carries its original name and points at the published build. To run the FC27 version in this repo, use the unpacked install below until the store listing is updated.
+
 After installing, open the FC Web App and refresh the page if it was already open.
 
 ### Requirements
@@ -42,6 +44,14 @@ After installing, open the FC Web App and refresh the page if it was already ope
 4. Click `Load unpacked`.
 5. Select this repo folder.
 6. Open the FC Web App and refresh the page.
+
+Only load one copy of this extension at a time. If an older checkout is already
+loaded alongside this one, both inject into the page and the first one to run
+wins the initialization guard, so your changes appear to have no effect. Disable
+the other copy first.
+
+This branch targets the FC27 Web App. It reads the content path and year from
+the Web App at runtime, so it tracks FC27 asset URLs instead of hardcoding them.
 
 ## Basic Usage
 

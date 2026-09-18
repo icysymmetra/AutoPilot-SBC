@@ -1,0 +1,129 @@
+name: Package extension
+
+# Builds the Chrome Web Store upload zip from the runtime files only.
+# Download the artifact from the run summary, then upload it at
+# https://chrome.google.com/webstore/devconsole
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: package-extension-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    name: Build store zip
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # Only ship what the extension loads at runtime. Anything else (tests,
+      # docs, prototypes, replay data) bloats the package and risks rejection.
+      - name: Stage runtime files
+        run: |
+          set -euo pipefail
+          rm -rf dist
+          mkdir -p dist/page dist/solver dist/data dist/icons
+          cp manifest.json background.js content-script.js dist/
+          cp page/ea-data-bridge.js page/ea-data-bridge.css dist/page/
+          cp solver/solver.js \
+             solver/chemistry.js \
+             solver/constraint-compiler.js \
+             solver/concept-players.js \
+             solver/worker.js \
+             solver/glpk.js \
+             solver/glpk.wasm dist/solver/
+          cp data/changelog.json dist/data/
+          cp icons/*.png dist/icons/
+
+      # Fails the build if the manifest references a file that is not present,
+      # if the solver module graph is incomplete, or if development files leaked in.
+      - name: Validate bundle
+        run: node .github/validate-bundle.cjs dist
+
+      - name: Read version
+        id: meta
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./manifest.json').version")
+          if [ -z "$VERSION" ]; then
+            echo "Could not read version from manifest.json" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "zip_name=autopilotsbc-fc27-v${VERSION}.zip" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=autopilotsbc-fc27-v${VERSION}" >> "$GITHUB_OUTPUT"
+
+      # Explicit paths keep the archive entries clean: manifest.json must sit at
+      # the archive root with no leading "./". -D omits directory-only entries.
+      - name: Create store zip
+        run: |
+          set -euo pipefail
+          cd dist
+          zip -r -X -D "../${{ steps.meta.outputs.zip_name }}" \
+            manifest.json background.js content-script.js \
+            page solver data icons
+          cd ..
+          ls -lh "${{ steps.meta.outputs.zip_name }}"
+
+      - name: Verify zip layout
+        run: |
+          set -euo pipefail
+          ZIP="${{ steps.meta.outputs.zip_name }}"
+          ENTRIES=$(unzip -Z1 "$ZIP")
+          echo "$ENTRIES"
+          # The store requires manifest.json at the archive root.
+          echo "$ENTRIES" | grep -qx "manifest.json" || {
+            echo "manifest.json is not at the archive root" >&2
+            exit 1
+          }
+          # Guard against accidental development files in the package.
+          if echo "$ENTRIES" | grep -Eq '\.test\.mjs$|^docs/|^prototypes/|^benchmark-runs/|\.map$'; then
+            echo "development files found in the archive" >&2
+            exit 1
+          fi
+          # Exactly one file under data/, regardless of directory entries.
+          DATA_FILES=$(echo "$ENTRIES" | grep -Ec '^data/[^/]+$' || true)
+          if [ "$DATA_FILES" -ne 1 ]; then
+            echo "expected exactly 1 file under data/, found $DATA_FILES" >&2
+            exit 1
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.artifact_name }}
+          path: ${{ steps.meta.outputs.zip_name }}
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Publish release asset
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.meta.outputs.zip_name }}
+
+      - name: Summary
+        run: |
+          {
+            echo "### Extension package"
+            echo ""
+            echo "- Name: \`$(node -p "require('./manifest.json').name")\`"
+            echo "- Version: \`${{ steps.meta.outputs.version }}\`"
+            echo "- Archive: \`${{ steps.meta.outputs.zip_name }}\`"
+            echo ""
+            echo "Download the artifact from this run, then upload the zip at the [Chrome Web Store developer dashboard](https://chrome.google.com/webstore/devconsole)."
+          } >> "$GITHUB_STEP_SUMMARY"

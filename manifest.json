@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "AutopilotSBC | FC26 SBC Solver",
-  "version": "1.10",
-  "description": "Automation tool for SBC solving in the FC26 Web App || 100% FREE UNLIMITED USAGE.",
+  "name": "AutopilotSBC | FC27 SBC Solver",
+  "version": "1.11",
+  "description": "Automation tool for SBC solving in the FC27 Web App || 100% FREE UNLIMITED USAGE.",
   "icons": {
     "16": "icons/icon16.png",
     "32": "icons/icon32.png",

@@ -2,6 +2,17 @@
   "version": 1,
   "releases": [
     {
+      "version": "1.12",
+      "date": "2026-09-20",
+      "headline": "FC27 price and transfer list fixes",
+      "summary": "Player prices and your transfer list now read correctly on the FC27 Web App.",
+      "details": [
+        "Fixed player prices so they use the FC27 price data set instead of last season's.",
+        "Fixed reading your transfer list, which came back empty on FC27.",
+        "Cleaned up the transfer list lookup so it falls back safely when a Web App build changes its data shape."
+      ]
+    },
+    {
       "version": "1.11",
       "date": "2026-09-18",
       "headline": "FC27 support",

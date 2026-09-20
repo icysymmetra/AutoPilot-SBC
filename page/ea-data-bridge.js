@@ -2149,15 +2149,51 @@
   };
 
   const getTransferListItems = async () => {
+    const emptyTransferList = { unSoldItems: [], availableItems: [] };
     const service = services?.Item ?? services?.Club ?? null;
+    // FC27 dropped the FC26 transfer-list readers (getTransferListItemsByGroup /
+    // getTransferListItems, including the TransferMarket fallback) and exposes
+    // requestTransferItems() instead, which takes no arguments. Verified against
+    // the live app: services.Item.requestTransferItems.length === 0.
     const lookup =
       service?.getTransferListItemsByGroup ??
       service?.getTransferListItems ??
       services?.TransferMarket?.getTransferListItemsByGroup ??
+      service?.requestTransferItems ??
       null;
-    if (!lookup) return { unSoldItems: [], availableItems: [] };
-    const result = await observableToPromise(lookup(true));
-    return result?.data ?? { unSoldItems: [], availableItems: [] };
+    if (typeof lookup !== "function") return emptyTransferList;
+
+    let result = null;
+    try {
+      // Only pass the legacy flag to the legacy methods; the FC27 method takes none.
+      result =
+        lookup.length === 0
+          ? await observableToPromise(lookup())
+          : await observableToPromise(lookup(true));
+    } catch {
+      return emptyTransferList;
+    }
+
+    const data = result?.data ?? null;
+    if (!data || typeof data !== "object") return emptyTransferList;
+    if (Array.isArray(data.unSoldItems) || Array.isArray(data.availableItems)) {
+      return {
+        unSoldItems: Array.isArray(data.unSoldItems) ? data.unSoldItems : [],
+        availableItems: Array.isArray(data.availableItems)
+          ? data.availableItems
+          : [],
+      };
+    }
+    // Some builds hand back a plain collection rather than the grouped shape.
+    const flat = Array.isArray(data)
+      ? data
+      : Array.isArray(data.items)
+        ? data.items
+        : Array.isArray(data._collection)
+          ? data._collection
+          : null;
+    if (flat) return { unSoldItems: flat, availableItems: [] };
+    return emptyTransferList;
   };
 
   const markItemsAsUnassigned = (items) => {

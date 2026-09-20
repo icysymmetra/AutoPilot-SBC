@@ -7,8 +7,12 @@ const FUTGG_PLAYERS_BRIDGE_REQUEST = "EA_DATA_FUTGG_PLAYERS_REQUEST";
 const ALLOWED_BRIDGE_INJECT_PATHS = new Set(["page/ea-data-bridge.js"]);
 const EA_WEBAPP_URL_RE =
   /^https:\/\/www\.ea\.com(?:\/[^/?#]+)?\/ea-sports-fc\/ultimate-team\/web-app(?:\/|$)/i;
-const FUT_PRICE_API_URL = "https://www.fut.gg/api/fut/player-prices/26/";
-const FUT_PLAYERS_API_URL = "https://www.fut.gg/api/fut/players/v2/26/";
+// FUT.GG exposes its data per game year: .../player-prices/<year>/ and
+// .../players/v2/<year>/. FC27 serves its own data set at year 27, so this must
+// track the Web App generation rather than stay pinned to a past season.
+const FUT_GG_GAME_YEAR = "27";
+const FUT_PRICE_API_URL = `https://www.fut.gg/api/fut/player-prices/${FUT_GG_GAME_YEAR}/`;
+const FUT_PLAYERS_API_URL = `https://www.fut.gg/api/fut/players/v2/${FUT_GG_GAME_YEAR}/`;
 const FUT_PRICE_CACHE_TTL_MS = 10 * 60 * 1000;
 const FUT_PRICE_BATCH_SIZE = 10;
 const FUT_PRICE_MIN_GAP_MS = 450;

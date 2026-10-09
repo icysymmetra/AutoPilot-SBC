@@ -1,4 +1,5 @@
 import { buildSolverContext, solveSquad } from "./solver.js";
+import { solvePointsChallenge } from "./points-solver.js";
 
 const WORKER_RESPONSE = "SOLVER_WORKER_RESPONSE";
 
@@ -23,6 +24,17 @@ self.addEventListener("message", async (event) => {
       return reply(requestId, false, null, {
         code: "SOLVER_FAILED",
         message: error?.message || "Solver failed",
+      });
+    }
+  }
+
+  if (type === "SOLVE_POINTS") {
+    try {
+      return reply(requestId, true, solvePointsChallenge(payload || {}));
+    } catch (error) {
+      return reply(requestId, false, null, {
+        code: "POINTS_SOLVER_FAILED",
+        message: error?.message || "Points solver failed",
       });
     }
   }

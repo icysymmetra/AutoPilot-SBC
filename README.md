@@ -85,7 +85,11 @@ the Web App at runtime, so it tracks FC27 asset URLs instead of hardcoding them.
 
 ## Settings and Controls
 
-Most of the controls live inside the Web App under the extension's solver settings area.
+Global defaults live in the **Autopilot** tab in the Web App sidebar. Its Player pool, Card types, and Exclusions pages control the rating range, all seven solver options, base card qualities, and excluded players, leagues and nations.
+
+Changes stay in a draft until **Save Global**. **Discard changes** reloads the saved values. **Reset** restores defaults in the draft, then Save Global applies them. The version chip opens Changelog; Source code and Support live in the project footer.
+
+Challenge, multi, set and sequence settings keep their current entry points and override these global defaults. Solve Squad and Solve Points remain on their challenge screens.
 
 Depending on the flow, you can work with:
 

@@ -575,32 +575,31 @@
       payload[key] != null;
     const responseValue = hasOwn("response") ? payload.response : null;
     const dataValue = hasOwn("data") ? payload.data : null;
-
-    if (isPlainObject(responseValue) && !isPlainObject(dataValue)) {
-      return responseValue;
-    }
-    if (isPlainObject(dataValue) && !isPlainObject(responseValue)) {
-      return dataValue;
-    }
-    if (!isPlainObject(responseValue) && !isPlainObject(dataValue)) {
-      return payload;
-    }
-    // Both present: prefer whichever holds recognizable collection content.
-    const responseKeys = Object.keys(responseValue);
-    const dataKeys = Object.keys(dataValue);
-    const responseHasCollections = responseKeys.length > 0;
-    const dataHasCollections = dataKeys.length > 0;
+    if (responseValue == null) return dataValue ?? payload;
+    if (dataValue == null) return responseValue;
+    // An HTTP metadata object is not the inventory or SBC payload. Arrays
+    // are also valid payloads and must not get left inside the envelope.
+    const hasCollections = (value) =>
+      Array.isArray(value) ||
+      ["items", "sets", "categories", "challenges", "squad", "models", "entries"]
+        .some((key) => value && typeof value === "object" && key in value);
+    const responseHasCollections = hasCollections(responseValue);
+    const dataHasCollections = hasCollections(dataValue);
     if (dataHasCollections && !responseHasCollections) return dataValue;
     if (responseHasCollections && !dataHasCollections) return responseValue;
+    if (isPlainObject(dataValue) && !Object.keys(dataValue).length) {
+      return responseValue;
+    }
     return dataValue;
   };
 
   const observableToPromise = (observable) =>
     new Promise((resolve) => {
+      const owner = {};
       observable.observe(
-        this,
+        owner,
         (observer, { data, error, response, status, success }) => {
-          observer.unobserve(this);
+          observer.unobserve(owner);
           resolve({
             data: unwrapObservablePayload({ data, response }),
             raw: { data: data ?? null, response: response ?? null },
@@ -616,6 +615,12 @@
     observableToPromise(services.Club.search(criteria));
   const searchStorage = (criteria) =>
     observableToPromise(services.Item.searchStorageItems(criteria));
+
+  const resolveItemPileEnum = () =>
+    window?.ItemPile ??
+    services?.Item?.UTItemPileEnum ??
+    window?.UTItemPileEnum ??
+    {};
 
   const DEFAULT_SEARCH_PAGE_DELAY_SECONDS = 0.25;
   const APPLY_LOOKUP_FAST_PAGE_DELAY_SECONDS = 0.12;
@@ -1387,6 +1392,9 @@
     return roundMarketPriceStep(price + step);
   };
 
+  const getPricePlatform = () =>
+    services?.User?.getUser?.()?.getSelectedPersona?.()?.isPC ? "pc" : "console";
+
   const callPriceBridge = (ids = [], timeoutMs = PRICE_BRIDGE_TIMEOUT_MS) =>
     new Promise((resolve, reject) => {
       const requestId = crypto.randomUUID();
@@ -1413,6 +1421,7 @@
             type: PRICE_BRIDGE_REQUEST,
             requestId,
             ids: normalizePriceIdList(ids),
+            platform: getPricePlatform(),
             source: SOLVER_BRIDGE_SOURCE,
           },
           "*",
@@ -1452,7 +1461,7 @@
           {
             type: FUTGG_PLAYERS_BRIDGE_REQUEST,
             requestId,
-            payload,
+            payload: { ...payload, platform: getPricePlatform() },
             source: SOLVER_BRIDGE_SOURCE,
           },
           "*",
@@ -1667,6 +1676,7 @@
     conceptItems: [],
     checking: false,
     buying: false,
+    stopping: false,
     reconciling: false,
     cancelToken: { cancelled: false },
   };
@@ -1800,13 +1810,31 @@
 
   const resetConceptBuyerRowAfterPlanChange = (row) => {
     if (!row) return;
+    if (isConceptBuyerTerminalStatus(row.status)) return;
     row.market = "Not checked";
     row.marketCheckedMaxBuy = null;
     row.lastAttemptPlan = null;
-    if (row.status !== "Bought") {
-      row.status = row.enabled ? "Ready" : "Skipped";
-      row.message = "";
-    }
+    row.status = row.enabled ? "Ready" : "Skipped";
+    row.message = "";
+  };
+
+  const isConceptBuyerTerminalStatus = (status) =>
+    status === "Bought" || status === "Owned";
+
+  const isConceptBuyerRowLocked = (row) =>
+    conceptBuyerState.buying ||
+    conceptBuyerState.checking ||
+    conceptBuyerState.reconciling ||
+    isConceptBuyerTerminalStatus(row?.status);
+
+  const restoreConceptBuyerScroll = (scrollTop) => {
+    const scroller = conceptBuyerState.overlay?.querySelector?.(
+      ".ea-data-concept-buyer-body",
+    );
+    if (!scroller || scrollTop == null) return;
+    try {
+      scroller.scrollTop = scrollTop;
+    } catch {}
   };
 
   const buildConceptIncrementalCaps = ({
@@ -2151,13 +2179,21 @@
         error: bidResult?.error === 461 ? "lost_bid" : "bid_failed",
       };
     }
-    const ItemPile =
-      services?.Item?.UTItemPileEnum ?? window?.UTItemPileEnum ?? {};
+    const ItemPile = resolveItemPileEnum();
     const clubPile = ItemPile.CLUB ?? 7;
+    let moveError = null;
     try {
       await observableToPromise(services.Item.move(item, clubPile));
+    } catch (error) {
+      moveError = String(error?.message ?? error);
+    }
+    try {
+      clearPlayersSnapshotCache({
+        clearWarmLookup: true,
+        bumpRevision: true,
+      });
     } catch {}
-    return { success: true, buyPrice: buyNowPrice };
+    return { success: true, buyPrice: buyNowPrice, moveError, item };
   };
 
   const refreshCurrentChallengeAfterConceptBuy = async (
@@ -2200,6 +2236,7 @@
     conceptBuyerState.cancelToken.cancelled = true;
     conceptBuyerState.checking = false;
     conceptBuyerState.buying = false;
+    conceptBuyerState.stopping = false;
     conceptBuyerState.reconciling = false;
     conceptBuyerState.overlay?.remove?.();
     conceptBuyerState.overlay = null;
@@ -2216,6 +2253,9 @@
     if (!overlay) return;
     const rows = conceptBuyerState.rows;
     const enabled = rows.filter((row) => row.enabled).length;
+    const actionable = rows.filter(
+      (row) => row.enabled && !isConceptBuyerTerminalStatus(row.status),
+    ).length;
     const bought = rows.filter((row) => row.status === "Bought").length;
     const owned = rows.filter((row) => row.status === "Owned").length;
     const failed = rows.filter((row) => row.status === "Failed").length;
@@ -2234,18 +2274,26 @@
       start.textContent = conceptBuyerState.reconciling
         ? "Updating Plans..."
         : conceptBuyerState.buying
-          ? "Stop Buying"
+          ? conceptBuyerState.stopping
+            ? "Stopping..."
+            : "Stop Buying"
           : "Start Buying";
-      start.disabled = conceptBuyerState.checking || conceptBuyerState.reconciling;
+      start.disabled =
+        conceptBuyerState.checking ||
+        conceptBuyerState.reconciling ||
+        conceptBuyerState.stopping ||
+        (!conceptBuyerState.buying && actionable <= 0);
     }
     if (check) {
       check.textContent = conceptBuyerState.checking
-        ? "Checking..."
+        ? conceptBuyerState.stopping
+          ? "Stopping..."
+          : "Stop Checking"
         : "Check Market";
       check.disabled =
         conceptBuyerState.buying ||
-        conceptBuyerState.checking ||
-        conceptBuyerState.reconciling;
+        conceptBuyerState.reconciling ||
+        conceptBuyerState.stopping;
     }
     for (const close of closeButtons) {
       close.disabled =
@@ -2267,6 +2315,7 @@
     onChange,
     className = "",
     min = "200",
+    disabled = false,
   } = {}) => {
     const input = document.createElement("input");
     input.type = "number";
@@ -2275,10 +2324,7 @@
     input.inputMode = "numeric";
     input.value = getConceptBuyPriceInputValue(value);
     input.className = className;
-    input.disabled =
-      conceptBuyerState.buying ||
-      conceptBuyerState.checking ||
-      conceptBuyerState.reconciling;
+    input.disabled = Boolean(disabled);
     if (ariaLabel) input.setAttribute("aria-label", ariaLabel);
     input.addEventListener("change", () => {
       try {
@@ -2291,6 +2337,7 @@
   const appendConceptBuyerModeToggle = (container, row) => {
     const toggle = document.createElement("div");
     toggle.className = "ea-data-concept-buyer-mode-toggle";
+    const locked = isConceptBuyerRowLocked(row);
     for (const mode of CONCEPT_BUY_MODES) {
       const button = document.createElement("button");
       button.type = "button";
@@ -2299,10 +2346,7 @@
         normalizeConceptBuyMode(row.buyMode) === mode ? "true" : "false";
       button.textContent =
         mode === CONCEPT_BUY_MODE_EXACT ? "Exact" : "Incremental";
-      button.disabled =
-        conceptBuyerState.buying ||
-        conceptBuyerState.checking ||
-        conceptBuyerState.reconciling;
+      button.disabled = locked;
       button.addEventListener("click", () => {
         setConceptBuyerRowMode(row, mode);
         renderConceptBuyerRows();
@@ -2313,6 +2357,7 @@
   };
 
   const appendConceptBuyerExactEditor = (container, row) => {
+    const locked = isConceptBuyerRowLocked(row);
     row.exactPrices = normalizeConceptExactPrices(
       row.exactPrices ?? row.buyPrices,
     );
@@ -2334,6 +2379,7 @@
       const input = createConceptBuyerPriceInput({
         value: price,
         ariaLabel: `Exact buy price ${attemptIndex + 1} for ${row.name}`,
+        disabled: locked,
         onChange: (nextPrice) => {
           if (nextPrice == null) {
             row.exactPrices.splice(attemptIndex, 1);
@@ -2352,10 +2398,7 @@
         remove.type = "button";
         remove.className = "ea-data-concept-buyer-attempt-remove";
         remove.textContent = "x";
-        remove.disabled =
-          conceptBuyerState.buying ||
-          conceptBuyerState.checking ||
-          conceptBuyerState.reconciling;
+        remove.disabled = locked;
         remove.setAttribute(
           "aria-label",
           `Remove exact price ${attemptIndex + 1} for ${row.name}`,
@@ -2381,10 +2424,7 @@
       more.className = "ea-data-concept-buyer-more-attempts";
       more.textContent = `+${prices.length - visiblePrices.length} more`;
       more.title = prices.slice(visiblePrices.length).map(formatCoins).join(", ");
-      more.disabled =
-        conceptBuyerState.buying ||
-        conceptBuyerState.checking ||
-        conceptBuyerState.reconciling;
+      more.disabled = locked;
       more.addEventListener("click", () => {
         row.expandedAttempts = true;
         renderConceptBuyerRows();
@@ -2395,10 +2435,7 @@
       less.type = "button";
       less.className = "ea-data-concept-buyer-more-attempts";
       less.textContent = "Show less";
-      less.disabled =
-        conceptBuyerState.buying ||
-        conceptBuyerState.checking ||
-        conceptBuyerState.reconciling;
+      less.disabled = locked;
       less.addEventListener("click", () => {
         row.expandedAttempts = false;
         renderConceptBuyerRows();
@@ -2409,11 +2446,7 @@
     addAttempt.type = "button";
     addAttempt.className = "ea-data-concept-buyer-add-attempt";
     addAttempt.textContent = "+";
-    addAttempt.disabled =
-      conceptBuyerState.buying ||
-      conceptBuyerState.checking ||
-      conceptBuyerState.reconciling ||
-      row.exactPrices.length >= CONCEPT_BUY_EXACT_LIMIT;
+    addAttempt.disabled = locked || row.exactPrices.length >= CONCEPT_BUY_EXACT_LIMIT;
     addAttempt.title = "Add the next EA market price as an exact attempt";
     addAttempt.addEventListener("click", () => {
       const last =
@@ -2435,6 +2468,7 @@
   const appendConceptBuyerIncrementalEditor = (container, row) => {
     const grid = document.createElement("div");
     grid.className = "ea-data-concept-buyer-incremental-editor";
+    const locked = isConceptBuyerRowLocked(row);
     const fields = [
       {
         label: "Start",
@@ -2471,6 +2505,7 @@
         value: field.value,
         ariaLabel: field.aria,
         min: field.min ?? "200",
+        disabled: locked,
         onChange: (nextPrice, rawValue) => {
           field.onChange(nextPrice, rawValue);
           resetConceptBuyerRowAfterPlanChange(row);
@@ -2507,6 +2542,8 @@
     if (!overlay) return;
     const body = overlay.querySelector(".ea-data-concept-buyer-table tbody");
     if (!body) return;
+    const scroller = overlay.querySelector(".ea-data-concept-buyer-body");
+    const scrollTop = readNumeric(scroller?.scrollTop) ?? null;
     body.replaceChildren();
     for (const row of conceptBuyerState.rows) {
       const tr = document.createElement("tr");
@@ -2522,12 +2559,20 @@
         conceptBuyerState.buying ||
         conceptBuyerState.checking ||
         conceptBuyerState.reconciling ||
-        row.status === "Owned";
+        isConceptBuyerTerminalStatus(row.status);
       toggle.setAttribute("aria-label", `Buy ${row.name}`);
       toggle.addEventListener("change", () => {
         row.enabled = toggle.checked;
-        if (!row.enabled && row.status === "Ready") row.status = "Skipped";
-        if (row.enabled && row.status === "Skipped") row.status = "Ready";
+        if (!row.enabled && !isConceptBuyerTerminalStatus(row.status)) {
+          row.status = "Skipped";
+          row.message = "";
+        }
+        if (row.enabled && !isConceptBuyerTerminalStatus(row.status)) {
+          row.status = "Ready";
+          row.message = "";
+          row.market = "Not checked";
+          row.marketCheckedMaxBuy = null;
+        }
         renderConceptBuyerRows();
       });
       enabledCell.append(toggle);
@@ -2602,6 +2647,7 @@
       body.append(tr);
     }
     updateConceptBuyerSummary();
+    restoreConceptBuyerScroll(scrollTop);
   };
 
   const hydrateConceptBuyerPrices = async () => {
@@ -2757,7 +2803,7 @@
     const rowsToResolve = Array.isArray(rows)
       ? rows
       : conceptBuyerState.rows.filter(
-          (row) => row.enabled && row.status === "Bought",
+          (row) => row.status === "Bought",
         );
     const touchedEntries = Array.from(
       new Set(
@@ -2862,7 +2908,7 @@
 
   const reconcileConceptBuyerSolverPlans = async () => {
     const rows = conceptBuyerState.rows.filter(
-      (row) => row.enabled && row.status === "Bought",
+      (row) => row.status === "Bought",
     );
     if (!rows.length) {
       const context = conceptBuyerState.sourceContext;
@@ -2887,13 +2933,22 @@
       return;
     }
     conceptBuyerState.checking = true;
+    conceptBuyerState.stopping = false;
     conceptBuyerState.cancelToken = { cancelled: false };
     updateConceptBuyerSummary();
+    let cancelled = false;
     try {
       for (const row of conceptBuyerState.rows) {
-        if (conceptBuyerState.cancelToken.cancelled) break;
-        if (!row.enabled) {
-          if (row.status !== "Owned") {
+        if (conceptBuyerState.cancelToken.cancelled) {
+          cancelled = true;
+          if (row.status === "Ready" || row.status === "Available") {
+            setConceptBuyerRowStatus(row, "Stopped", "Stopped by user");
+          }
+          renderConceptBuyerRows();
+          break;
+        }
+        if (!row.enabled || isConceptBuyerTerminalStatus(row.status)) {
+          if (!isConceptBuyerTerminalStatus(row.status)) {
             setConceptBuyerRowStatus(row, "Skipped");
             row.market = "Not checked";
             row.marketCheckedMaxBuy = null;
@@ -2924,7 +2979,10 @@
         let found = false;
         let lastError = "";
         for (let index = 0; index < plan.attempts.length; index += 1) {
-          if (conceptBuyerState.cancelToken.cancelled) break;
+          if (conceptBuyerState.cancelToken.cancelled) {
+            cancelled = true;
+            break;
+          }
           const attempt = plan.attempts[index];
           const maxBuy = attempt.searchMaxBuy;
           setConceptBuyerRowStatus(
@@ -2972,6 +3030,16 @@
             );
           }
         }
+        if (conceptBuyerState.cancelToken.cancelled || cancelled) {
+          cancelled = true;
+          if (row.status === "Checking") {
+            row.market = "Not checked";
+            row.marketCheckedMaxBuy = null;
+            setConceptBuyerRowStatus(row, "Stopped", "Stopped by user");
+            renderConceptBuyerRows();
+          }
+          break;
+        }
         if (!found && row.market === "No cards") {
           setConceptBuyerRowStatus(row, "No cards");
         } else if (!found && lastError) {
@@ -2985,9 +3053,18 @@
           ),
         );
       }
+      if (cancelled) {
+        showToast({
+          type: "info",
+          title: "Market Check Stopped",
+          message: "Stopped before the remaining selected players were checked.",
+          timeoutMs: 3000,
+        });
+      }
     } finally {
       conceptBuyerState.checking = false;
-      updateConceptBuyerSummary();
+      conceptBuyerState.stopping = false;
+      renderConceptBuyerRows();
     }
   };
 
@@ -2995,22 +3072,27 @@
     if (conceptBuyerState.checking || conceptBuyerState.reconciling) return;
     if (conceptBuyerState.buying) {
       conceptBuyerState.cancelToken.cancelled = true;
+      conceptBuyerState.stopping = true;
+      updateConceptBuyerSummary();
       return;
     }
     conceptBuyerState.buying = true;
+    conceptBuyerState.stopping = false;
     conceptBuyerState.cancelToken = { cancelled: false };
     updateConceptBuyerSummary();
+    let cancelled = false;
     try {
       for (const row of conceptBuyerState.rows) {
         if (conceptBuyerState.cancelToken.cancelled) {
-          if (row.status === "Ready" || row.status === "Available") {
+          cancelled = true;
+          if (row.status === "Ready" || row.status === "Available" || row.status === "Buying") {
             setConceptBuyerRowStatus(row, "Stopped");
           }
           renderConceptBuyerRows();
           break;
         }
-        if (!row.enabled) {
-          if (row.status !== "Owned") {
+        if (!row.enabled || isConceptBuyerTerminalStatus(row.status)) {
+          if (!isConceptBuyerTerminalStatus(row.status)) {
             setConceptBuyerRowStatus(row, "Skipped");
           }
           renderConceptBuyerRows();
@@ -3037,7 +3119,10 @@
         let bought = false;
         let lastError = "";
         for (let index = 0; index < plan.attempts.length; index += 1) {
-          if (conceptBuyerState.cancelToken.cancelled) break;
+          if (conceptBuyerState.cancelToken.cancelled) {
+            cancelled = true;
+            break;
+          }
           const attempt = plan.attempts[index];
           const maxBuy = attempt.searchMaxBuy;
           setConceptBuyerRowStatus(
@@ -3076,14 +3161,37 @@
               buyNowPrice: getAuctionBuyNowPrice(target),
               success: Boolean(buyResult.success),
               error: buyResult.error ?? null,
+              moveError: buyResult.moveError ?? null,
             });
             if (buyResult.success) {
+              let recentOwnedPlayer = null;
+              try {
+                recentOwnedPlayer = toPlainPlayer(
+                  buyResult.item ?? target,
+                  {
+                    source: buyResult.moveError ? "transfer" : "club",
+                  },
+                );
+              } catch {}
+              try {
+                rememberRecentConceptPurchaseDefinition(
+                  row.definitionId,
+                  recentOwnedPlayer,
+                );
+                clearPlayersSnapshotCache({
+                  clearWarmLookup: true,
+                  bumpRevision: true,
+                });
+              } catch {}
               row.boughtPrice = buyResult.buyPrice;
+              row.enabled = false;
               row.market = "Bought";
               setConceptBuyerRowStatus(
                 row,
                 "Bought",
-                `Bought for ${formatCoins(buyResult.buyPrice)}`,
+                buyResult.moveError
+                  ? `Bought for ${formatCoins(buyResult.buyPrice)}; club move pending`
+                  : `Bought for ${formatCoins(buyResult.buyPrice)}`,
               );
               bought = true;
               renderConceptBuyerRows();
@@ -3101,6 +3209,14 @@
             );
           }
         }
+        if (conceptBuyerState.cancelToken.cancelled || cancelled) {
+          cancelled = true;
+          if (!bought && row.status === "Buying") {
+            setConceptBuyerRowStatus(row, "Stopped", "Stopped by user");
+            renderConceptBuyerRows();
+          }
+          break;
+        }
         if (!bought && row.status !== "Stopped") {
           setConceptBuyerRowStatus(row, "Failed", lastError || "Buy failed");
           renderConceptBuyerRows();
@@ -3111,6 +3227,18 @@
             CONCEPT_BUY_MARKET_DELAY_MAX_MS,
           ),
         );
+      }
+      const boughtBeforeReconcile = conceptBuyerState.rows.filter(
+        (row) => row.status === "Bought",
+      ).length;
+      if (cancelled && boughtBeforeReconcile <= 0) {
+        showToast({
+          type: "info",
+          title: "Concept Buying Stopped",
+          message: "Stopped before the remaining selected players were processed.",
+          timeoutMs: 3500,
+        });
+        return;
       }
       let reconcileResult = null;
       conceptBuyerState.reconciling = true;
@@ -3130,17 +3258,20 @@
       const unresolved = readNumeric(reconcileResult?.unresolved) ?? 0;
       showToast({
         type: unresolved > 0 ? "warning" : boughtCount ? "success" : "info",
-        title: "Concept Buying Complete",
+        title: cancelled ? "Concept Buying Stopped" : "Concept Buying Complete",
         message:
           unresolved > 0
             ? `${boughtCount} player(s) bought, ${unresolved} still unresolved.`
-            : `${boughtCount} player(s) bought.`,
+            : cancelled
+              ? `${boughtCount} player(s) bought before stopping.`
+              : `${boughtCount} player(s) bought.`,
         timeoutMs: 3000,
       });
     } finally {
       conceptBuyerState.reconciling = false;
       conceptBuyerState.buying = false;
-      updateConceptBuyerSummary();
+      conceptBuyerState.stopping = false;
+      renderConceptBuyerRows();
     }
   };
 
@@ -3230,6 +3361,8 @@
       ?.addEventListener("click", () => {
         if (conceptBuyerState.checking) {
           conceptBuyerState.cancelToken.cancelled = true;
+          conceptBuyerState.stopping = true;
+          updateConceptBuyerSummary();
           return;
         }
         checkConceptBuyerAvailability();
@@ -3982,14 +4115,52 @@
 
   const getTransferListItems = async () => {
     const service = services?.Item ?? services?.Club ?? null;
+    const owner =
+      typeof service?.requestTransferItems === "function" ||
+      typeof service?.getTransferListItemsByGroup === "function" ||
+      typeof service?.getTransferListItems === "function"
+        ? service
+        : services?.TransferMarket;
     const lookup =
-      service?.getTransferListItemsByGroup ??
-      service?.getTransferListItems ??
-      services?.TransferMarket?.getTransferListItemsByGroup ??
+      owner?.requestTransferItems ??
+      owner?.getTransferListItemsByGroup ??
+      owner?.getTransferListItems ??
       null;
     if (!lookup) return { unSoldItems: [], availableItems: [] };
-    const result = await observableToPromise(lookup(true));
-    return result?.data ?? { unSoldItems: [], availableItems: [] };
+    const result = await observableToPromise(
+      lookup === owner.requestTransferItems
+        ? lookup.call(owner)
+        : lookup.call(owner, true),
+    );
+    const data = result?.data ?? { unSoldItems: [], availableItems: [] };
+    const markTransfer = (items) => {
+      const list = Array.isArray(items) ? items : [];
+      for (const item of list) {
+        if (!item || typeof item !== "object") continue;
+        try {
+          item.isTransferTarget = true;
+        } catch {}
+      }
+      return list;
+    };
+    if (Array.isArray(data.items)) {
+      const unSoldItems = [];
+      const availableItems = [];
+      for (const item of data.items) {
+        const auction = item?.getAuctionData?.();
+        if (!auction || auction.isSold?.()) continue;
+        if (auction.isExpired?.()) unSoldItems.push(item);
+        else if (auction.isInactive?.()) availableItems.push(item);
+      }
+      return {
+        unSoldItems: markTransfer(unSoldItems),
+        availableItems: markTransfer(availableItems),
+      };
+    }
+    return {
+      unSoldItems: markTransfer(data.unSoldItems),
+      availableItems: markTransfer(data.availableItems),
+    };
   };
 
   const markItemsAsUnassigned = (items) => {
@@ -4024,7 +4195,7 @@
     if (typeof lookup === "function") {
       try {
         initial = extractUnassignedItemsFromResult(
-          await observableToPromise(lookup(false)),
+          await observableToPromise(lookup.call(services.Item, false)),
         );
       } catch {
         initial = [];
@@ -4032,7 +4203,7 @@
     }
 
     if (
-      !refresh ||
+      (!refresh && typeof lookup === "function") ||
       typeof services?.Item?.requestUnassignedItems !== "function"
     ) {
       return initial;
@@ -4046,13 +4217,13 @@
           { minGapMs: 400, maxAttempts: 1 },
         ),
       );
-      if (Array.isArray(requested) && requested.length) return requested;
+      if (Array.isArray(requested)) return requested;
     } catch {}
 
     if (typeof lookup === "function") {
       try {
         const refreshed = extractUnassignedItemsFromResult(
-          await observableToPromise(lookup(false)),
+          await observableToPromise(lookup.call(services.Item, false)),
         );
         if (Array.isArray(refreshed) && refreshed.length) return refreshed;
       } catch {}
@@ -4099,6 +4270,74 @@
     storage: null,
     unassigned: null,
     transfer: null,
+  };
+  const RECENT_CONCEPT_PURCHASE_TTL_MS = 10 * 60 * 1000;
+  const recentConceptPurchasesByDefinition = new Map();
+
+  const mergeRecentConceptPurchasePlayers = (current = [], player = null) => {
+    const players = Array.isArray(current) ? current.slice() : [];
+    if (!player || player?.id == null) return players;
+    const key = String(player.id);
+    const existingIndex = players.findIndex(
+      (entry) => entry?.id != null && String(entry.id) === key,
+    );
+    if (existingIndex >= 0) players[existingIndex] = player;
+    else players.push(player);
+    return players;
+  };
+
+  const rememberRecentConceptPurchaseDefinition = (
+    definitionId,
+    player = null,
+  ) => {
+    const defId = readNumeric(definitionId);
+    if (defId == null) return;
+    const previous =
+      recentConceptPurchasesByDefinition.get(String(defId)) ?? null;
+    recentConceptPurchasesByDefinition.set(String(defId), {
+      definitionId: defId,
+      at: Date.now(),
+      players: mergeRecentConceptPurchasePlayers(previous?.players, player),
+    });
+  };
+
+  const getRecentConceptPurchaseDefinitionIds = () => {
+    const now = Date.now();
+    const ids = [];
+    for (const [key, entry] of recentConceptPurchasesByDefinition.entries()) {
+      if (
+        !entry ||
+        now - Number(entry.at ?? 0) > RECENT_CONCEPT_PURCHASE_TTL_MS
+      ) {
+        recentConceptPurchasesByDefinition.delete(key);
+        continue;
+      }
+      if (entry.definitionId != null) ids.push(entry.definitionId);
+    }
+    return Array.from(new Set(ids));
+  };
+
+  const getRecentConceptPurchasePlayersSnapshot = (definitionIds = []) => {
+    const requested = new Set(
+      (definitionIds ?? [])
+        .map(readNumeric)
+        .filter((value) => value != null)
+        .map(String),
+    );
+    const entries = [];
+    for (const entry of recentConceptPurchasesByDefinition.values()) {
+      if (!entry || entry.definitionId == null) continue;
+      if (requested.size && !requested.has(String(entry.definitionId))) {
+        continue;
+      }
+      entries.push(...(Array.isArray(entry.players) ? entry.players : []));
+    }
+    return entries.filter(
+      (player) =>
+        player &&
+        player?.id != null &&
+        readNumeric(player?.definitionId) != null,
+    );
   };
 
   const getRawInventoryStatus = () => {
@@ -4291,15 +4530,20 @@
   const fetchPlayersSnapshot = async (options = {}, config = {}) => {
     const normalized = normalizePlayersFetchOptions(options);
     const includeUnassigned = normalized.includeUnassigned === true;
-    const { clubItems, storageItems, unassignedItems, duplicateDefIds } =
-      await ensureRawInventorySnapshot({
+    const {
+      clubItems,
+      storageItems,
+      unassignedItems,
+      transferItems,
+      duplicateDefIds,
+    } = await ensureRawInventorySnapshot({
         force: config?.forceRaw === true,
         ttlMs:
           readNumeric(config?.ttlMs) ??
           readNumeric(config?.sourceTtlMs) ??
           PLAYERS_FETCH_TTL_MS,
         includeUnassigned,
-        includeTransfer: false,
+        includeTransfer: includeUnassigned,
       });
     const allowedActiveSquadDefIds = new Set(
       normalized?.allowedActiveSquadDefIds ?? [],
@@ -4369,6 +4613,17 @@
             }),
           )
       : [];
+    const rawTransferPlayers = includeUnassigned
+      ? (transferItems ?? [])
+          .filter((player) => matchesRawPlayerSelection(player, normalized))
+          .filter((player) => !player?.isEnrolledInAcademy?.())
+          .map((player) =>
+            toPlainPlayer(player, {
+              duplicateDefIds,
+              source: "transfer",
+            }),
+          )
+      : [];
     const storageDefIds = new Set(
       (rawStoragePlayers ?? [])
         .map((player) => player?.definitionId ?? null)
@@ -4432,19 +4687,35 @@
           (clubDefIds.has(defId) || clubDefIds.has(String(defId))),
       };
     });
+    const transferPlayers = (rawTransferPlayers ?? []).map((player) => {
+      const defId = player?.definitionId ?? null;
+      return {
+        ...player,
+        hasStorageDuplicate:
+          defId != null &&
+          (storageDefIds.has(defId) || storageDefIds.has(String(defId))),
+        hasClubDuplicate:
+          defId != null &&
+          (clubDefIds.has(defId) || clubDefIds.has(String(defId))),
+      };
+    });
     cacheExcludedPlayerNames(clubPlayers);
     cacheExcludedPlayerNames(storagePlayers);
     cacheExcludedPlayerNames(unassignedPlayers);
+    cacheExcludedPlayerNames(transferPlayers);
     cacheLeagueMetaFromPlayers(clubPlayers);
     cacheLeagueMetaFromPlayers(storagePlayers);
     cacheLeagueMetaFromPlayers(unassignedPlayers);
+    cacheLeagueMetaFromPlayers(transferPlayers);
     cacheNationMetaFromPlayers(clubPlayers);
     cacheNationMetaFromPlayers(storagePlayers);
     cacheNationMetaFromPlayers(unassignedPlayers);
+    cacheNationMetaFromPlayers(transferPlayers);
     return {
       clubPlayers,
       storagePlayers,
       unassignedPlayers,
+      transferPlayers,
       duplicateDefIds,
       fetchedAt: new Date().toISOString(),
     };
@@ -4634,14 +4905,14 @@
 
   const moveItemsToClub = async (items) => {
     if (!items?.length) return 0;
-    const ItemPile =
-      services?.Item?.UTItemPileEnum ?? window?.UTItemPileEnum ?? {};
+    const ItemPile = resolveItemPileEnum();
     const clubPile = ItemPile.CLUB ?? 7;
     const storagePile = ItemPile.STORAGE ?? 10;
-    const unassignedPile = ItemPile.UNASSIGNED ?? null;
+    const unassignedPile = ItemPile.UNASSIGNED ?? ItemPile.INBOX ?? null;
     const movable = items.filter((item) => {
       const pile = item?.pile ?? null;
       if (Boolean(item?.isUnassigned)) return true;
+      if (Boolean(item?.isTransferTarget)) return true;
       if (pile == null || pile === clubPile) return false;
       if (pile === storagePile) return true;
       if (unassignedPile != null && pile === unassignedPile) return true;
@@ -4703,27 +4974,40 @@
   const getSquadLookupForSbc = async (key = "id", options = {}) => {
     const { raw = false, ...lookupOptions } = options ?? {};
     const includeUnassigned = lookupOptions?.includeUnassigned === true;
-    const [clubPlayers, storagePlayers, unassignedPlayers] = await Promise.all([
-      raw ? getClubItems(lookupOptions) : getClubPlayers(lookupOptions),
-      raw
-        ? getStorageItems(lookupOptions)
-        : getStoragePlayers(null, lookupOptions),
-      includeUnassigned
-        ? raw
-          ? getUnassignedItems({
-              refresh: lookupOptions?.refreshUnassigned === true,
-            })
-          : getUnassignedItems({
-              refresh: lookupOptions?.refreshUnassigned === true,
-            }).then((items) =>
-              (items ?? [])
+    const includeTransfer = lookupOptions?.includeTransfer === true;
+    const [clubPlayers, storagePlayers, unassignedPlayers, transferPlayers] =
+      await Promise.all([
+        raw ? getClubItems(lookupOptions) : getClubPlayers(lookupOptions),
+        raw
+          ? getStorageItems(lookupOptions)
+          : getStoragePlayers(null, lookupOptions),
+        includeUnassigned
+          ? raw
+            ? getUnassignedItems({
+                refresh: lookupOptions?.refreshUnassigned === true,
+              })
+            : getUnassignedItems({
+                refresh: lookupOptions?.refreshUnassigned === true,
+              }).then((items) =>
+                (items ?? [])
+                  .filter((player) => !player?.isEnrolledInAcademy?.())
+                  .map((player) =>
+                    toPlainPlayer(player, { source: "unassigned" }),
+                  ),
+              )
+          : Promise.resolve([]),
+        includeTransfer
+          ? getTransferListItems().then(({ unSoldItems, availableItems }) => {
+              const items = (unSoldItems ?? []).concat(availableItems ?? []);
+              if (raw) return items;
+              return items
                 .filter((player) => !player?.isEnrolledInAcademy?.())
                 .map((player) =>
-                  toPlainPlayer(player, { source: "unassigned" }),
-                ),
-            )
-        : Promise.resolve([]),
-    ]);
+                  toPlainPlayer(player, { source: "transfer" }),
+                );
+            })
+          : Promise.resolve([]),
+      ]);
     const lookup = new Map();
     for (const player of clubPlayers) {
       if (!player) continue;
@@ -4738,6 +5022,12 @@
       addPlayerToLookup(lookup, id, player);
     }
     for (const player of unassignedPlayers) {
+      if (!player) continue;
+      if (player?.isEnrolledInAcademy?.()) continue;
+      const id = player[key] ?? player.id;
+      addPlayerToLookup(lookup, id, player);
+    }
+    for (const player of transferPlayers) {
       if (!player) continue;
       if (player?.isEnrolledInAcademy?.()) continue;
       const id = player[key] ?? player.id;
@@ -4780,31 +5070,54 @@
 
     const { raw = false, ...lookupOptions } = options ?? {};
     const includeUnassigned = lookupOptions?.includeUnassigned === true;
-    const [clubPlayers, storagePlayers, unassignedPlayers] = await Promise.all([
-      raw
-        ? getClubItems({ ...lookupOptions, playerIds })
-        : getClubPlayers({ ...lookupOptions, playerIds }),
-      raw
-        ? getStorageItems({ ...lookupOptions, playerIds })
-        : getStoragePlayers(null, { ...lookupOptions, playerIds }),
-      includeUnassigned
-        ? getUnassignedItems({
-            refresh: lookupOptions?.refreshUnassigned === true,
-          }).then((items) => {
-            const filtered = (items ?? []).filter((player) => {
-              const defId = player?.definitionId ?? null;
-              return (
-                defId != null &&
-                (defIdSet.has(defId) || defIdSet.has(String(defId)))
-              );
-            });
-            if (raw) return filtered;
-            return filtered
-              .filter((player) => !player?.isEnrolledInAcademy?.())
-              .map((player) => toPlainPlayer(player, { source: "unassigned" }));
-          })
-        : Promise.resolve([]),
-    ]);
+    const includeTransfer = lookupOptions?.includeTransfer === true;
+    const [clubPlayers, storagePlayers, unassignedPlayers, transferPlayers] =
+      await Promise.all([
+        raw
+          ? getClubItems({ ...lookupOptions, playerIds })
+          : getClubPlayers({ ...lookupOptions, playerIds }),
+        raw
+          ? getStorageItems({ ...lookupOptions, playerIds })
+          : getStoragePlayers(null, { ...lookupOptions, playerIds }),
+        includeUnassigned
+          ? getUnassignedItems({
+              refresh: lookupOptions?.refreshUnassigned === true,
+            }).then((items) => {
+              const filtered = (items ?? []).filter((player) => {
+                const defId = player?.definitionId ?? null;
+                return (
+                  defId != null &&
+                  (defIdSet.has(defId) || defIdSet.has(String(defId)))
+                );
+              });
+              if (raw) return filtered;
+              return filtered
+                .filter((player) => !player?.isEnrolledInAcademy?.())
+                .map((player) =>
+                  toPlainPlayer(player, { source: "unassigned" }),
+                );
+            })
+          : Promise.resolve([]),
+        includeTransfer
+          ? getTransferListItems().then(({ unSoldItems, availableItems }) => {
+              const filtered = (unSoldItems ?? [])
+                .concat(availableItems ?? [])
+                .filter((player) => {
+                  const defId = player?.definitionId ?? null;
+                  return (
+                    defId != null &&
+                    (defIdSet.has(defId) || defIdSet.has(String(defId)))
+                  );
+                });
+              if (raw) return filtered;
+              return filtered
+                .filter((player) => !player?.isEnrolledInAcademy?.())
+                .map((player) =>
+                  toPlainPlayer(player, { source: "transfer" }),
+                );
+            })
+          : Promise.resolve([]),
+      ]);
     const lookup = new Map();
     for (const player of clubPlayers) {
       if (!player) continue;
@@ -4819,6 +5132,12 @@
       addPlayerToLookup(lookup, id, player);
     }
     for (const player of unassignedPlayers) {
+      if (!player) continue;
+      if (player?.isEnrolledInAcademy?.()) continue;
+      const id = player[key] ?? player.id;
+      addPlayerToLookup(lookup, id, player);
+    }
+    for (const player of transferPlayers) {
       if (!player) continue;
       if (player?.isEnrolledInAcademy?.()) continue;
       const id = player[key] ?? player.id;
@@ -4904,7 +5223,7 @@
       if (!item || item.id == null) continue;
       if (!uniqueItems.has(item.id)) uniqueItems.set(item.id, item);
     }
-    const storagePile = services?.Item?.UTItemPileEnum?.STORAGE ?? 10;
+    const storagePile = resolveItemPileEnum().STORAGE ?? 10;
     for (const item of uniqueItems.values()) {
       const defId = item?.definitionId ?? null;
       if (defId == null) continue;
@@ -4914,7 +5233,7 @@
       const pool = poolByDefinition.get(defId);
       if (item?.isStorage) pool.storage.push(item);
       else if (item?.pile === storagePile) pool.storage.push(item);
-      else if (item?.pile === (services?.Item?.UTItemPileEnum?.CLUB ?? 7))
+      else if (item?.pile === (resolveItemPileEnum().CLUB ?? 7))
         pool.club.push(item);
       else pool.other.push(item);
     }
@@ -4927,9 +5246,9 @@
     };
     const comparePoolItems = (a, b) => {
       const aClub =
-        a?.pile === (services?.Item?.UTItemPileEnum?.CLUB ?? 7) ? 0 : 1;
+        a?.pile === (resolveItemPileEnum().CLUB ?? 7) ? 0 : 1;
       const bClub =
-        b?.pile === (services?.Item?.UTItemPileEnum?.CLUB ?? 7) ? 0 : 1;
+        b?.pile === (resolveItemPileEnum().CLUB ?? 7) ? 0 : 1;
       if (aClub !== bClub) return aClub - bClub;
       const aStorage = a?.pile === storagePile ? 1 : 0;
       const bStorage = b?.pile === storagePile ? 1 : 0;
@@ -5187,6 +5506,7 @@
       }),
       includeUnassigned: usesUnassignedLookup,
       refreshUnassigned: usesUnassignedLookup,
+      includeTransfer: usesUnassignedLookup,
       excludeActiveSquad:
         usesUnassignedLookup || usesActiveSquadLookup ? false : true,
     };
@@ -5300,8 +5620,7 @@
       }
     } catch {}
     const lookup = warmLookup ?? (await getCachedLookup());
-    const ItemPile =
-      services?.Item?.UTItemPileEnum ?? window?.UTItemPileEnum ?? {};
+    const ItemPile = resolveItemPileEnum();
     const clubPile = ItemPile.CLUB ?? 7;
     const storagePile = ItemPile.STORAGE ?? 10;
     const uniqueItems = new Map();
@@ -6671,6 +6990,7 @@
   };
 
   const resolveEligibilityKeyEnum = () => {
+    if (window?.SBCEligibilityKey) return window.SBCEligibilityKey;
     if (typeof SBCEligibilityKeyEnum !== "undefined")
       return SBCEligibilityKeyEnum;
     if (window?.SBCEligibilityKeyEnum) return window.SBCEligibilityKeyEnum;
@@ -7198,6 +7518,9 @@
 
   const loadChallenge = async (challenge, useDao = false, options = {}) => {
     if (!challenge) return { data: null };
+    if (challenge.isOneClickChallenge?.()) {
+      throw new Error("Open this points SBC's Work Area and use Solve Points. Squad and sequence submission do not support points SBCs.");
+    }
     const force = options?.force === true;
     let result;
     if (useDao && services.SBC?.sbcDAO?.loadChallenge && challenge?.id) {
@@ -7469,6 +7792,8 @@
   let homeHookPollingIntervalId = null;
   let currencyNavBarHooked = false;
   let currentChallenge = null;
+  let currentPointsController = null;
+  let pointsWorkAreaHooked = false;
   let lastOpenedChallengeId = null;
   let lastOpenedSetId = null;
   let debugEnabled = false;
@@ -7639,33 +7964,10 @@
       normalized?.allowedCardBuckets,
       CARD_BUCKET_KEYS,
     );
-    const bucketByKey = new Map(
-      CARD_BUCKETS.map((bucket) => [bucket.key, bucket]),
-    );
-    const bucketsByQuality = buckets.reduce((groups, key) => {
-      const bucket = bucketByKey.get(key) ?? null;
-      const quality = bucket?.quality ?? "other";
-      const rarity = bucket?.rarity ?? "card";
-      const list = groups.get(quality) ?? [];
-      list.push(rarity);
-      groups.set(quality, list);
-      return groups;
-    }, new Map());
-    const qualityLabels = ["bronze", "silver", "gold"]
-      .map((quality) => {
-        const rarities = bucketsByQuality.get(quality) ?? [];
-        if (!rarities.length) return null;
-        const rarityText =
-          rarities.includes("common") && rarities.includes("rare")
-            ? "common + rare"
-            : rarities.includes("common")
-              ? "common"
-              : rarities.includes("rare")
-                ? "rare"
-                : "selected";
-        return `${quality[0].toUpperCase()}${quality.slice(1)} ${rarityText}`;
-      })
-      .filter(Boolean);
+    const selectedBuckets = new Set(buckets);
+    const qualityLabels = CARD_QUALITIES
+      .filter(quality => quality.bucketKeys.some(key => selectedBuckets.has(key)))
+      .map(quality => quality.label);
     const toggleLabels = (SOLVER_TOGGLE_FIELDS ?? [])
       .filter((field) => Boolean(normalized?.[field.key]))
       .map((field) => {
@@ -8446,7 +8748,7 @@
 
       if (subtitleEl) {
         subtitleEl.textContent =
-          "See the latest updates in AutopilotSBC. You can reopen this any time from Settings.";
+          "See the latest updates in AutopilotSBC. Reopen this from the version chip in the Autopilot tab.";
       }
       if (footerCopyEl) {
         footerCopyEl.textContent =
@@ -9296,1266 +9598,59 @@
     return api;
   };
 
-  const ensureGlobalSettingsSection = (view) => {
-    if (!view) return null;
-    try {
-      ensureSolveButtonStyles();
-    } catch {}
-    const actionsRoot = resolveAppSettingsActionsRoot(view);
-    if (!actionsRoot) return null;
-
-    const existing = view?.__eaDataGlobalSettingsSection ?? null;
-    if (existing && existing.isConnected) {
-      void refreshGlobalSettingsSection(view);
-      return existing;
-    }
-
-    const section = document.createElement("div");
-    section.className = "ea-data-app-settings-group";
-    section.innerHTML = `
-      <div class="ea-data-app-settings-divider"><span>SBC Solver</span></div>
-      <div class="ea-data-app-settings-subtitle">Global defaults for all solvers. Challenge-local and session settings override these values.</div>
-      <div class="ea-data-settings-section-label">Global Player Rating Range</div>
-      <div class="ea-data-range" id="ea-data-app-settings-global-range">
-        <div class="ea-data-range__track"></div>
-        <input class="ea-data-range__input ea-data-range__input--min" id="ea-data-app-settings-global-min" type="range" min="0" max="99" step="1" value="0" />
-        <input class="ea-data-range__input ea-data-range__input--max" id="ea-data-app-settings-global-max" type="range" min="0" max="99" step="1" value="99" />
-      </div>
-      <div class="ea-data-range__fields">
-        <div class="ea-data-range__field">
-          <div class="ea-data-range__label">Min</div>
-          <input class="ea-data-range__number" id="ea-data-app-settings-global-min-input" type="number" min="0" max="99" step="1" value="0" inputmode="numeric" />
-        </div>
-        <div class="ea-data-range__field">
-          <div class="ea-data-range__label">Max</div>
-          <input class="ea-data-range__number" id="ea-data-app-settings-global-max-input" type="number" min="0" max="99" step="1" value="99" inputmode="numeric" />
-        </div>
-      </div>
-        <div class="ea-data-settings-section-label ea-data-settings-section-label--spaced">Global Player Pool Options</div>
-      <div class="ea-data-toggle-list">
-        ${renderSolverToggleFields({ scope: "global", idPrefix: "ea-data-app-setting-" })}
-      </div>
-        <div class="ea-data-settings-section-label ea-data-settings-section-label--spaced">Excluded Players</div>
-      <div class="ea-data-excluded-wrap">
-        <div class="ea-data-excluded-meta">
-          <span class="ea-data-excluded-count" id="ea-data-app-settings-excluded-count">0 excluded</span>
-          <button type="button" class="ea-data-excluded-clear" data-action="clear-excluded">Clear All</button>
-        </div>
-        <div class="ea-data-excluded-list" id="ea-data-app-settings-excluded-list">
-          <div class="ea-data-excluded-empty">No excluded players.</div>
-        </div>
-      </div>
-      <div class="ea-data-collapsible-section">
-        <button type="button" class="ea-data-collapsible-heading" id="ea-data-app-settings-excluded-leagues-toggle" data-action="toggle-excluded-leagues" aria-expanded="false" aria-controls="ea-data-app-settings-excluded-leagues-panel">
-          <span>Excluded Leagues</span>
-          <span class="ea-data-exclusion-count-badge" id="ea-data-app-settings-excluded-league-heading-count" data-state="idle"></span>
-          <span class="ea-data-collapsible-chevron" aria-hidden="true">&#9662;</span>
-        </button>
-        <div class="ea-data-excluded-leagues-wrap" id="ea-data-app-settings-excluded-leagues-panel" aria-hidden="true" hidden>
-          <div class="ea-data-excluded-meta">
-            <span class="ea-data-excluded-count" id="ea-data-app-settings-excluded-league-count">0 excluded</span>
-            <button type="button" class="ea-data-excluded-clear" data-action="clear-excluded-leagues">Clear All</button>
-          </div>
-          <input
-            class="ea-data-excluded-leagues-search"
-            id="ea-data-app-settings-excluded-leagues-search"
-            type="search"
-            spellcheck="false"
-            autocomplete="off"
-            placeholder="Search leagues by name or ID..."
-          />
-          <div class="ea-data-excluded-leagues-selected" id="ea-data-app-settings-excluded-leagues-selected">
-            <div class="ea-data-excluded-empty">No excluded leagues.</div>
-          </div>
-          <div class="ea-data-excluded-leagues-list" id="ea-data-app-settings-excluded-leagues-list">
-            <div class="ea-data-excluded-empty">Loading leagues...</div>
-          </div>
-          <div class="ea-data-excluded-leagues-muted">Excluded leagues could cause conflicts with league-specific challenge requirements.</div>
-        </div>
-      </div>
-      <div class="ea-data-collapsible-section">
-        <button type="button" class="ea-data-collapsible-heading" id="ea-data-app-settings-excluded-nations-toggle" data-action="toggle-excluded-nations" aria-expanded="false" aria-controls="ea-data-app-settings-excluded-nations-panel">
-          <span>Excluded Nations</span>
-          <span class="ea-data-exclusion-count-badge" id="ea-data-app-settings-excluded-nation-heading-count" data-state="idle"></span>
-          <span class="ea-data-collapsible-chevron" aria-hidden="true">&#9662;</span>
-        </button>
-        <div class="ea-data-excluded-leagues-wrap" id="ea-data-app-settings-excluded-nations-panel" aria-hidden="true" hidden>
-          <div class="ea-data-excluded-meta">
-            <span class="ea-data-excluded-count" id="ea-data-app-settings-excluded-nation-count">0 excluded</span>
-            <button type="button" class="ea-data-excluded-clear" data-action="clear-excluded-nations">Clear All</button>
-          </div>
-          <input
-            class="ea-data-excluded-leagues-search"
-            id="ea-data-app-settings-excluded-nations-search"
-            type="search"
-            spellcheck="false"
-            autocomplete="off"
-            placeholder="Search nations by name or ID..."
-          />
-          <div class="ea-data-excluded-leagues-selected" id="ea-data-app-settings-excluded-nations-selected">
-            <div class="ea-data-excluded-empty">No excluded nations.</div>
-          </div>
-          <div class="ea-data-excluded-leagues-list" id="ea-data-app-settings-excluded-nations-list">
-            <div class="ea-data-excluded-empty">Loading nations...</div>
-          </div>
-          <div class="ea-data-excluded-leagues-muted">Excluded nations could cause conflicts with nation-specific challenge requirements.</div>
-        </div>
-      </div>
-      <div class="ea-data-app-settings-actions">
-        <a href="https://github.com/just-a-weird-guy/AutoPilot-SBC" target="_blank" rel="noopener noreferrer" class="ea-data-app-settings-btn ea-data-app-settings-btn--github" title="View source code on GitHub">
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
-          Source Code
-        </a>
-        <button type="button" class="ea-data-app-settings-btn ea-data-app-settings-btn--info" data-action="open-whats-new">Changelog</button>
-        <button type="button" class="ea-data-app-settings-btn ea-data-app-settings-btn--reset" data-action="reset-global">Reset Global</button>
-        <button type="button" class="ea-data-app-settings-btn" data-action="save-global">Save Global</button>
-      </div>
-    `;
-    actionsRoot.append(section);
-
-    const rangeRoot = section.querySelector(
-      "#ea-data-app-settings-global-range",
-    );
-    const minRange = section.querySelector("#ea-data-app-settings-global-min");
-    const maxRange = section.querySelector("#ea-data-app-settings-global-max");
-    const minInput = section.querySelector(
-      "#ea-data-app-settings-global-min-input",
-    );
-    const maxInput = section.querySelector(
-      "#ea-data-app-settings-global-max-input",
-    );
-    const toggleBinder = createSolverToggleBinder({
-      root: section,
-      scope: "global",
-      idPrefix: "ea-data-app-setting-",
-    });
-    const excludedCountEl = section.querySelector(
-      "#ea-data-app-settings-excluded-count",
-    );
-    const excludedListEl = section.querySelector(
-      "#ea-data-app-settings-excluded-list",
-    );
-    const clearExcludedBtn = section.querySelector(
-      '[data-action="clear-excluded"]',
-    );
-    const excludedLeagueCountEl = section.querySelector(
-      "#ea-data-app-settings-excluded-league-count",
-    );
-    const excludedLeagueHeadingCountEl = section.querySelector(
-      "#ea-data-app-settings-excluded-league-heading-count",
-    );
-    const excludedLeagueSearchInput = section.querySelector(
-      "#ea-data-app-settings-excluded-leagues-search",
-    );
-    const excludedLeagueSelectedEl = section.querySelector(
-      "#ea-data-app-settings-excluded-leagues-selected",
-    );
-    const excludedLeagueListEl = section.querySelector(
-      "#ea-data-app-settings-excluded-leagues-list",
-    );
-    const clearExcludedLeaguesBtn = section.querySelector(
-      '[data-action="clear-excluded-leagues"]',
-    );
-    const toggleExcludedLeaguesBtn = section.querySelector(
-      '[data-action="toggle-excluded-leagues"]',
-    );
-    const excludedLeaguesPanel = section.querySelector(
-      "#ea-data-app-settings-excluded-leagues-panel",
-    );
-    const excludedNationCountEl = section.querySelector(
-      "#ea-data-app-settings-excluded-nation-count",
-    );
-    const excludedNationHeadingCountEl = section.querySelector(
-      "#ea-data-app-settings-excluded-nation-heading-count",
-    );
-    const excludedNationSearchInput = section.querySelector(
-      "#ea-data-app-settings-excluded-nations-search",
-    );
-    const excludedNationSelectedEl = section.querySelector(
-      "#ea-data-app-settings-excluded-nations-selected",
-    );
-    const excludedNationListEl = section.querySelector(
-      "#ea-data-app-settings-excluded-nations-list",
-    );
-    const clearExcludedNationsBtn = section.querySelector(
-      '[data-action="clear-excluded-nations"]',
-    );
-    const toggleExcludedNationsBtn = section.querySelector(
-      '[data-action="toggle-excluded-nations"]',
-    );
-    const excludedNationsPanel = section.querySelector(
-      "#ea-data-app-settings-excluded-nations-panel",
-    );
-    const resetBtn = section.querySelector('[data-action="reset-global"]');
-    const whatsNewBtn = section.querySelector('[data-action="open-whats-new"]');
-    const saveBtn = section.querySelector('[data-action="save-global"]');
-    const listeners = [];
-    let exclusionActionInFlight = false;
-    let excludedLeagueActionInFlight = false;
-    let excludedNationActionInFlight = false;
-    let lastExcludedSignature = "";
-    let lastExcludedLeagueSignature = "";
-    let lastExcludedNationSignature = "";
-    let excludedLeagueSearchValue = "";
-    let excludedLeagueOptions = [];
-    let excludedLeagueOptionsHydrated = false;
-    let excludedLeagueHydrateToken = 0;
-    let excludedNationSearchValue = "";
-    let excludedNationOptions = [];
-    let excludedNationOptionsHydrated = false;
-    let excludedNationHydrateToken = 0;
-
-    const syncExclusionHeadingBadge = (badgeEl, count, noun) => {
-      if (!badgeEl) return;
-      const normalizedCount = Math.max(0, Math.floor(readNumeric(count) ?? 0));
-      badgeEl.textContent =
-        normalizedCount > 0 ? `${normalizedCount} excluded` : "";
-      badgeEl.setAttribute(
-        "data-state",
-        normalizedCount > 0 ? "active" : "idle",
-      );
-      if (normalizedCount > 0) {
-        const nounLabel = normalizedCount === 1 ? noun : `${noun}s`;
-        badgeEl.setAttribute(
-          "title",
-          `${normalizedCount} ${nounLabel} currently excluded`,
-        );
-      } else {
-        badgeEl.removeAttribute("title");
-      }
-    };
-
-    const on = (target, type, fn) => {
-      if (!target || typeof target.addEventListener !== "function") return;
-      target.addEventListener(type, fn);
-      listeners.push(() => {
+  // The global settings page owns native navigation and reuses the same storage.
+  const installAutopilotSettingsTab = () => {
+    if (typeof EAView === "undefined" || typeof EAViewController === "undefined" ||
+        typeof UTGameTabBarController === "undefined" ||
+        typeof UTGameFlowNavigationController === "undefined" ||
+        typeof UTTabBarItemView === "undefined" || !window.AutopilotSettingsTab) return false;
+    const metadata = readExtensionMetadata();
+    return window.AutopilotSettingsTab.installNative({
+      version: metadata.version || "1.11.8",
+      stylesheetUrl: new URL("page/autopilot-settings.css", metadata.baseUrl).href,
+      defaults: getDefaultSolverSettings(),
+      fields: SOLVER_TOGGLE_FIELDS,
+      registry: globalSettingsStateRegistry,
+      normalize: normalizeSolverSettingsInput,
+      load: () => getSolverSettingsForChallenge(null),
+      save: async settings => {
+        await setGlobalSolverSettings(settings);
+        await refreshAllGlobalSettingsSections();
+      },
+      catalog: (type, options) => type === "nations"
+        ? getAvailableNationsForExclusion(options) : getAvailableLeaguesForExclusion(options),
+      iconUrl: (type, id) => {
+        const method = type === "leagues" ? "getLeagueImageUri"
+          : type === "nations" ? "getFlagImageUri" : null;
+        if (!method) return null;
+        const assetId = type === "leagues" ? normalizeLeagueId(id) : normalizeNationId(id);
+        const assets = window.AssetLocationUtils ?? services?.AssetLocationUtils;
+        if (!assetId || typeof assets?.[method] !== "function") return null;
         try {
-          target.removeEventListener(type, fn);
-        } catch {}
-      });
-    };
-
-    const setCollapsibleExpanded = (buttonEl, panelEl, expanded) => {
-      const nextExpanded = Boolean(expanded);
-      try {
-        buttonEl?.setAttribute?.(
-          "aria-expanded",
-          nextExpanded ? "true" : "false",
-        );
-      } catch {}
-      try {
-        if (panelEl) {
-          panelEl.hidden = !nextExpanded;
-          panelEl.setAttribute("aria-hidden", nextExpanded ? "false" : "true");
+          return assets[method](Number(assetId), window.UIThemeVariation?.DARK);
+        } catch {
+          return null;
         }
-      } catch {}
-    };
-
-    const toggleCollapsible = (buttonEl, panelEl) => {
-      const expanded =
-        String(buttonEl?.getAttribute?.("aria-expanded") ?? "false") === "true";
-      setCollapsibleExpanded(buttonEl, panelEl, !expanded);
-    };
-
-    const renderExcludedPlayersList = (excludedIds = []) => {
-      if (!excludedCountEl || !excludedListEl) return;
-      loadExcludedPlayerMetaCache();
-      const normalized = normalizePlayerIdList(excludedIds, []);
-      const count = normalized.length;
-      try {
-        excludedCountEl.textContent = `${count} excluded`;
-      } catch {}
-      try {
-        clearExcludedBtn.disabled = exclusionActionInFlight || count === 0;
-      } catch {}
-
-      try {
-        while (excludedListEl.firstChild) {
-          excludedListEl.removeChild(excludedListEl.firstChild);
+      },
+      label: (type, id) => {
+        if (type === "players") {
+          loadExcludedPlayerMetaCache();
+          return { id: String(id), ...excludedPlayerMetaCache.get(String(id)),
+            name: getExcludedPlayerLabelById(id) || `Player ${id}` };
         }
-      } catch {
-        try {
-          excludedListEl.innerHTML = "";
-        } catch {}
-      }
+        return { id: String(id), name: type === "nations"
+          ? getNationExclusionLabel(id) : getLeagueExclusionLabel(id) };
+      },
+      changelog: () => openWhatsNewOverlay({ source: "manual" }),
+    }, { EAView, EAViewController, UTGameTabBarController,
+      UTGameFlowNavigationController, UTTabBarItemView });
+  };
 
-      if (!count) {
-        const empty = document.createElement("div");
-        empty.className = "ea-data-excluded-empty";
-        empty.textContent = "No excluded players.";
-        excludedListEl.append(empty);
-        return;
-      }
-
-      for (const id of normalized) {
-        const row = document.createElement("div");
-        row.className = "ea-data-excluded-item";
-
-        const main = document.createElement("div");
-        main.className = "ea-data-excluded-item-main";
-
-        const nameEl = document.createElement("div");
-        nameEl.className = "ea-data-excluded-item-name";
-        const cachedMeta = excludedPlayerMetaCache.get(String(id));
-        const meta =
-          cachedMeta && typeof cachedMeta === "object" ? cachedMeta : null;
-        nameEl.textContent = meta?.name ?? `Player ${id}`;
-
-        const metaEl = document.createElement("div");
-        metaEl.className = "ea-data-excluded-item-meta";
-        const metaBits = [];
-        if (meta?.rating != null) {
-          metaBits.push(`${meta.rating} OVR`);
-        }
-        if (meta?.rarityName) {
-          metaBits.push(meta.rarityName);
-        }
-        metaEl.textContent = metaBits.length
-          ? metaBits.join(" \u2022 ")
-          : "Player card";
-
-        main.append(nameEl);
-        main.append(metaEl);
-
-        const removeBtn = document.createElement("button");
-        removeBtn.type = "button";
-        removeBtn.className = "ea-data-excluded-remove";
-        removeBtn.setAttribute("data-action", "remove-excluded");
-        removeBtn.setAttribute("data-id", String(id));
-        removeBtn.textContent = "Remove";
-        removeBtn.disabled = exclusionActionInFlight;
-
-        row.append(main);
-        row.append(removeBtn);
-        excludedListEl.append(row);
-      }
-    };
-
-    const hydrateExcludedNames = async (excludedIds = []) => {
-      loadExcludedPlayerMetaCache();
-      const normalized = normalizePlayerIdList(excludedIds, []);
-      if (!normalized.length) return;
-      const missing = normalized.filter((id) => {
-        const meta = excludedPlayerMetaCache.get(String(id));
-        if (!meta || typeof meta !== "object") return true;
-        return meta.rating == null || !meta.rarityName;
-      });
-      if (!missing.length) return;
-      try {
-        const snapshot = await ensurePlayersSnapshot({ ignoreLoaned: true });
-        cacheExcludedPlayerNames(snapshot?.clubPlayers ?? []);
-        cacheExcludedPlayerNames(snapshot?.storagePlayers ?? []);
-        renderExcludedPlayersList(normalized);
-      } catch {}
-    };
-
-    const getLeagueLabel = (leagueId) => {
-      const id = normalizeLeagueId(leagueId);
-      if (!id) return null;
-      const cached = leagueMetaCache.get(String(id));
-      const cachedName = sanitizeDisplayText(cached?.name);
-      if (cachedName) return cachedName;
-      const lookupName = sanitizeDisplayText(getLeagueName(id));
-      if (lookupName) {
-        upsertLeagueMeta(id, { name: lookupName });
-        return lookupName;
-      }
-      return `League ${id}`;
-    };
-
-    const renderExcludedLeagueChips = (excludedLeagueIds = []) => {
-      if (!excludedLeagueCountEl || !excludedLeagueSelectedEl) return;
-      const normalized = normalizeLeagueIdList(excludedLeagueIds, []);
-      const count = normalized.length;
-      try {
-        excludedLeagueCountEl.textContent = `${count} excluded`;
-      } catch {}
-      syncExclusionHeadingBadge(excludedLeagueHeadingCountEl, count, "league");
-      try {
-        clearExcludedLeaguesBtn.disabled =
-          excludedLeagueActionInFlight || count === 0;
-      } catch {}
-
-      try {
-        while (excludedLeagueSelectedEl.firstChild) {
-          excludedLeagueSelectedEl.removeChild(
-            excludedLeagueSelectedEl.firstChild,
-          );
-        }
-      } catch {
-        try {
-          excludedLeagueSelectedEl.innerHTML = "";
-        } catch {}
-      }
-
-      if (!count) {
-        const empty = document.createElement("div");
-        empty.className = "ea-data-excluded-empty";
-        empty.textContent = "No excluded leagues.";
-        excludedLeagueSelectedEl.append(empty);
-        return;
-      }
-
-      for (const id of normalized) {
-        const chip = document.createElement("div");
-        chip.className = "ea-data-excluded-league-chip";
-
-        const label = document.createElement("span");
-        label.textContent = getLeagueLabel(id) ?? `League ${id}`;
-
-        const removeBtn = document.createElement("button");
-        removeBtn.type = "button";
-        removeBtn.className = "ea-data-excluded-league-chip-remove";
-        removeBtn.setAttribute("data-action", "remove-excluded-league");
-        removeBtn.setAttribute("data-id", String(id));
-        removeBtn.textContent = "\u00D7";
-        removeBtn.disabled = excludedLeagueActionInFlight;
-
-        chip.append(label);
-        chip.append(removeBtn);
-        excludedLeagueSelectedEl.append(chip);
-      }
-    };
-
-    const renderExcludedLeagueOptions = (excludedLeagueIds = []) => {
-      if (!excludedLeagueListEl) return;
-      const normalizedExcluded = normalizeLeagueIdList(excludedLeagueIds, []);
-      const excludedSet = new Set(normalizedExcluded.map(String));
-      const search = String(excludedLeagueSearchValue ?? "")
-        .trim()
-        .toLowerCase();
-      const options = Array.isArray(excludedLeagueOptions)
-        ? excludedLeagueOptions
-        : [];
-      const filtered = options.filter((entry) => {
-        const idText = String(entry?.id ?? "").toLowerCase();
-        const nameText = String(entry?.name ?? "").toLowerCase();
-        if (!search) return true;
-        return idText.includes(search) || nameText.includes(search);
-      });
-
-      try {
-        while (excludedLeagueListEl.firstChild) {
-          excludedLeagueListEl.removeChild(excludedLeagueListEl.firstChild);
-        }
-      } catch {
-        try {
-          excludedLeagueListEl.innerHTML = "";
-        } catch {}
-      }
-
-      if (!filtered.length) {
-        const empty = document.createElement("div");
-        empty.className = "ea-data-excluded-empty";
-        empty.textContent = excludedLeagueOptionsHydrated
-          ? "No leagues match the current search."
-          : "Loading leagues...";
-        excludedLeagueListEl.append(empty);
-        return;
-      }
-
-      for (const entry of filtered) {
-        const leagueId = normalizeLeagueId(entry?.id);
-        if (!leagueId) continue;
-        const leagueName =
-          sanitizeDisplayText(entry?.name) ??
-          getLeagueLabel(leagueId) ??
-          `League ${leagueId}`;
-        const selected = excludedSet.has(String(leagueId));
-
-        const row = document.createElement("div");
-        row.className = "ea-data-excluded-leagues-option";
-        row.setAttribute("data-id", String(leagueId));
-        row.setAttribute("data-selected", selected ? "true" : "false");
-
-        const main = document.createElement("div");
-        main.className = "ea-data-excluded-leagues-option-main";
-        const nameEl = document.createElement("div");
-        nameEl.className = "ea-data-excluded-leagues-option-name";
-        nameEl.textContent = leagueName;
-        const idEl = document.createElement("div");
-        idEl.className = "ea-data-excluded-leagues-option-id";
-        idEl.textContent = `League ID ${leagueId}`;
-        main.append(nameEl);
-        main.append(idEl);
-
-        const check = document.createElement("div");
-        check.className = "ea-data-excluded-leagues-option-check";
-        check.textContent = selected ? "\u2713" : "";
-
-        row.append(main);
-        row.append(check);
-        excludedLeagueListEl.append(row);
-      }
-    };
-
-    const hydrateExcludedLeagueOptions = async ({ force = false } = {}) => {
-      const token = ++excludedLeagueHydrateToken;
-      try {
-        const options = await getAvailableLeaguesForExclusion({ force });
-        if (token !== excludedLeagueHydrateToken) return;
-        excludedLeagueOptions = Array.isArray(options) ? options : [];
-        excludedLeagueOptionsHydrated = true;
-      } catch {
-        if (token !== excludedLeagueHydrateToken) return;
-        excludedLeagueOptions = getLeagueOptionsFromMetaCache();
-        excludedLeagueOptionsHydrated = true;
-      }
-      renderExcludedLeagueOptions(currentSettings?.excludedLeagueIds ?? []);
-      renderExcludedLeagueChips(currentSettings?.excludedLeagueIds ?? []);
-    };
-
-    const getNationLabel = (nationId) => {
-      const id = normalizeNationId(nationId);
-      if (!id) return null;
-      const cached = nationMetaCache.get(String(id));
-      const cachedName = sanitizeDisplayText(cached?.name);
-      if (cachedName) return cachedName;
-      const lookupName = sanitizeDisplayText(getNationName(id));
-      if (lookupName) {
-        upsertNationMeta(id, { name: lookupName });
-        return lookupName;
-      }
-      return `Nation ${id}`;
-    };
-
-    const renderExcludedNationChips = (excludedNationIds = []) => {
-      if (!excludedNationCountEl || !excludedNationSelectedEl) return;
-      const normalized = normalizeNationIdList(excludedNationIds, []);
-      const count = normalized.length;
-      try {
-        excludedNationCountEl.textContent = `${count} excluded`;
-      } catch {}
-      syncExclusionHeadingBadge(excludedNationHeadingCountEl, count, "nation");
-      try {
-        clearExcludedNationsBtn.disabled =
-          excludedNationActionInFlight || count === 0;
-      } catch {}
-
-      try {
-        while (excludedNationSelectedEl.firstChild) {
-          excludedNationSelectedEl.removeChild(
-            excludedNationSelectedEl.firstChild,
-          );
-        }
-      } catch {
-        try {
-          excludedNationSelectedEl.innerHTML = "";
-        } catch {}
-      }
-
-      if (!count) {
-        const empty = document.createElement("div");
-        empty.className = "ea-data-excluded-empty";
-        empty.textContent = "No excluded nations.";
-        excludedNationSelectedEl.append(empty);
-        return;
-      }
-
-      for (const id of normalized) {
-        const chip = document.createElement("div");
-        chip.className = "ea-data-excluded-league-chip";
-
-        const label = document.createElement("span");
-        label.textContent = getNationLabel(id) ?? `Nation ${id}`;
-
-        const removeBtn = document.createElement("button");
-        removeBtn.type = "button";
-        removeBtn.className = "ea-data-excluded-league-chip-remove";
-        removeBtn.setAttribute("data-action", "remove-excluded-nation");
-        removeBtn.setAttribute("data-id", String(id));
-        removeBtn.textContent = "\u00D7";
-        removeBtn.disabled = excludedNationActionInFlight;
-
-        chip.append(label);
-        chip.append(removeBtn);
-        excludedNationSelectedEl.append(chip);
-      }
-    };
-
-    const renderExcludedNationOptions = (excludedNationIds = []) => {
-      if (!excludedNationListEl) return;
-      const normalizedExcluded = normalizeNationIdList(excludedNationIds, []);
-      const excludedSet = new Set(normalizedExcluded.map(String));
-      const search = String(excludedNationSearchValue ?? "")
-        .trim()
-        .toLowerCase();
-      const options = Array.isArray(excludedNationOptions)
-        ? excludedNationOptions
-        : [];
-      const filtered = options.filter((entry) => {
-        const idText = String(entry?.id ?? "").toLowerCase();
-        const nameText = String(entry?.name ?? "").toLowerCase();
-        if (!search) return true;
-        return idText.includes(search) || nameText.includes(search);
-      });
-
-      try {
-        while (excludedNationListEl.firstChild) {
-          excludedNationListEl.removeChild(excludedNationListEl.firstChild);
-        }
-      } catch {
-        try {
-          excludedNationListEl.innerHTML = "";
-        } catch {}
-      }
-
-      if (!filtered.length) {
-        const empty = document.createElement("div");
-        empty.className = "ea-data-excluded-empty";
-        empty.textContent = excludedNationOptionsHydrated
-          ? "No nations match the current search."
-          : "Loading nations...";
-        excludedNationListEl.append(empty);
-        return;
-      }
-
-      for (const entry of filtered) {
-        const nationId = normalizeNationId(entry?.id);
-        if (!nationId) continue;
-        const nationName =
-          sanitizeDisplayText(entry?.name) ??
-          getNationLabel(nationId) ??
-          `Nation ${nationId}`;
-        const selected = excludedSet.has(String(nationId));
-
-        const row = document.createElement("div");
-        row.className = "ea-data-excluded-leagues-option";
-        row.setAttribute("data-id", String(nationId));
-        row.setAttribute("data-selected", selected ? "true" : "false");
-
-        const main = document.createElement("div");
-        main.className = "ea-data-excluded-leagues-option-main";
-        const nameEl = document.createElement("div");
-        nameEl.className = "ea-data-excluded-leagues-option-name";
-        nameEl.textContent = nationName;
-        const idEl = document.createElement("div");
-        idEl.className = "ea-data-excluded-leagues-option-id";
-        idEl.textContent = `Nation ID ${nationId}`;
-        main.append(nameEl);
-        main.append(idEl);
-
-        const check = document.createElement("div");
-        check.className = "ea-data-excluded-leagues-option-check";
-        check.textContent = selected ? "\u2713" : "";
-
-        row.append(main);
-        row.append(check);
-        excludedNationListEl.append(row);
-      }
-    };
-
-    const hydrateExcludedNationOptions = async ({ force = false } = {}) => {
-      const token = ++excludedNationHydrateToken;
-      try {
-        const options = await getAvailableNationsForExclusion({ force });
-        if (token !== excludedNationHydrateToken) return;
-        excludedNationOptions = Array.isArray(options) ? options : [];
-        excludedNationOptionsHydrated = true;
-      } catch {
-        if (token !== excludedNationHydrateToken) return;
-        excludedNationOptions = getNationOptionsFromMetaCache();
-        excludedNationOptionsHydrated = true;
-      }
-      renderExcludedNationOptions(currentSettings?.excludedNationIds ?? []);
-      renderExcludedNationChips(currentSettings?.excludedNationIds ?? []);
-    };
-
-    let currentSettings = getDefaultSolverSettings();
-    const sync = (settings, { source } = {}) => {
-      const previous =
-        currentSettings && typeof currentSettings === "object"
-          ? currentSettings
-          : getDefaultSolverSettings();
-      const raw = settings && typeof settings === "object" ? settings : {};
-      const rangeSource =
-        raw?.ratingRange && typeof raw.ratingRange === "object"
-          ? raw.ratingRange
-          : raw;
-      let ratingMin = clampInt(
-        rangeSource.ratingMin ??
-          rangeSource.min ??
-          rangeSource.minRating ??
-          rangeSource.min_rating,
-        0,
-        99,
-      );
-      let ratingMax = clampInt(
-        rangeSource.ratingMax ??
-          rangeSource.max ??
-          rangeSource.maxRating ??
-          rangeSource.max_rating,
-        0,
-        99,
-      );
-      if (ratingMin == null) {
-        ratingMin =
-          clampInt(
-            previous?.ratingRange?.ratingMin ?? previous?.ratingMin,
-            0,
-            99,
-          ) ?? 0;
-      }
-      if (ratingMax == null) {
-        ratingMax =
-          clampInt(
-            previous?.ratingRange?.ratingMax ?? previous?.ratingMax,
-            0,
-            99,
-          ) ?? 99;
-      }
-      if (ratingMin > ratingMax) {
-        if (source === "min") ratingMin = ratingMax;
-        else if (source === "max") ratingMax = ratingMin;
-        else {
-          const tmp = ratingMin;
-          ratingMin = ratingMax;
-          ratingMax = tmp;
-        }
-      }
-
-      try {
-        minRange.value = String(ratingMin);
-        maxRange.value = String(ratingMax);
-      } catch {}
-      try {
-        minInput.value = String(ratingMin);
-        maxInput.value = String(ratingMax);
-      } catch {}
-
-      try {
-        if (ratingMin === ratingMax) {
-          if (source === "min") {
-            minRange.style.zIndex = "6";
-            maxRange.style.zIndex = "5";
-          } else if (source === "max") {
-            maxRange.style.zIndex = "6";
-            minRange.style.zIndex = "5";
-          }
-        } else {
-          minRange.style.zIndex = "";
-          maxRange.style.zIndex = "";
-        }
-      } catch {}
-
-      const minPct = (ratingMin / 99) * 100;
-      const maxPct = (ratingMax / 99) * 100;
-      try {
-        rangeRoot?.style?.setProperty("--min-pct", `${minPct}%`);
-        rangeRoot?.style?.setProperty("--max-pct", `${maxPct}%`);
-      } catch {}
-
-      const poolSettings = toggleBinder.setValues(raw, previous);
-      const excludedPlayerIds = normalizePlayerIdList(
-        raw?.excludedPlayerIds,
-        previous?.excludedPlayerIds ??
-          getSettingDefault(SETTINGS_PATHS.SOLVER_EXCLUDED_PLAYER_IDS),
-      );
-      const excludedSignature = excludedPlayerIds.join(",");
-      const excludedLeagueIds = normalizeLeagueIdList(
-        raw?.excludedLeagueIds,
-        previous?.excludedLeagueIds ??
-          getSettingDefault(SETTINGS_PATHS.SOLVER_EXCLUDED_LEAGUE_IDS),
-      );
-      const excludedLeagueSignature = excludedLeagueIds.join(",");
-      const excludedNationIds = normalizeNationIdList(
-        raw?.excludedNationIds ?? raw?.excludedNations,
-        previous?.excludedNationIds ??
-          getSettingDefault(SETTINGS_PATHS.SOLVER_EXCLUDED_NATION_IDS),
-      );
-      const excludedNationSignature = excludedNationIds.join(",");
-      renderExcludedPlayersList(excludedPlayerIds);
-      if (excludedSignature !== lastExcludedSignature) {
-        lastExcludedSignature = excludedSignature;
-        void hydrateExcludedNames(excludedPlayerIds);
-      }
-      renderExcludedLeagueChips(excludedLeagueIds);
-      renderExcludedLeagueOptions(excludedLeagueIds);
-      if (
-        excludedLeagueSignature !== lastExcludedLeagueSignature ||
-        !excludedLeagueOptionsHydrated
-      ) {
-        lastExcludedLeagueSignature = excludedLeagueSignature;
-        void hydrateExcludedLeagueOptions();
-      }
-      renderExcludedNationChips(excludedNationIds);
-      renderExcludedNationOptions(excludedNationIds);
-      if (
-        excludedNationSignature !== lastExcludedNationSignature ||
-        !excludedNationOptionsHydrated
-      ) {
-        lastExcludedNationSignature = excludedNationSignature;
-        void hydrateExcludedNationOptions();
-      }
-
-      currentSettings = {
-        ratingRange: { ratingMin, ratingMax },
-        ...poolSettings,
-        excludedPlayerIds,
-        excludedLeagueIds,
-        excludedNationIds,
-      };
-    };
-
-    on(minRange, "input", () =>
-      sync(
-        { ratingMin: minRange.value, ratingMax: maxRange.value },
-        {
-          source: "min",
-        },
-      ),
-    );
-    on(maxRange, "input", () =>
-      sync(
-        { ratingMin: minRange.value, ratingMax: maxRange.value },
-        {
-          source: "max",
-        },
-      ),
-    );
-    on(minInput, "input", () =>
-      sync(
-        { ratingMin: minInput.value, ratingMax: maxInput.value },
-        {
-          source: "min",
-        },
-      ),
-    );
-    on(maxInput, "input", () =>
-      sync(
-        { ratingMin: minInput.value, ratingMax: maxInput.value },
-        {
-          source: "max",
-        },
-      ),
-    );
-    setCollapsibleExpanded(
-      toggleExcludedLeaguesBtn,
-      excludedLeaguesPanel,
-      false,
-    );
-    setCollapsibleExpanded(
-      toggleExcludedNationsBtn,
-      excludedNationsPanel,
-      false,
-    );
-    on(toggleExcludedLeaguesBtn, "click", (event) => {
-      try {
-        event?.stopPropagation?.();
-      } catch {}
-      toggleCollapsible(toggleExcludedLeaguesBtn, excludedLeaguesPanel);
-    });
-    on(toggleExcludedNationsBtn, "click", (event) => {
-      try {
-        event?.stopPropagation?.();
-      } catch {}
-      toggleCollapsible(toggleExcludedNationsBtn, excludedNationsPanel);
-    });
-    on(whatsNewBtn, "click", (event) => {
-      try {
-        event?.stopPropagation?.();
-      } catch {}
-      void openWhatsNewOverlay({ source: "manual" });
-    });
-    on(saveBtn, "click", async (event) => {
-      try {
-        event?.stopPropagation?.();
-      } catch {}
-      try {
-        const next = {
-          ratingRange: normalizeRatingRange(currentSettings?.ratingRange),
-          ...toggleBinder.getValues(currentSettings),
-          excludedPlayerIds: normalizePlayerIdList(
-            currentSettings?.excludedPlayerIds,
-            getSettingDefault(SETTINGS_PATHS.SOLVER_EXCLUDED_PLAYER_IDS),
-          ),
-          excludedLeagueIds: normalizeLeagueIdList(
-            currentSettings?.excludedLeagueIds,
-            getSettingDefault(SETTINGS_PATHS.SOLVER_EXCLUDED_LEAGUE_IDS),
-          ),
-          excludedNationIds: normalizeNationIdList(
-            currentSettings?.excludedNationIds,
-            getSettingDefault(SETTINGS_PATHS.SOLVER_EXCLUDED_NATION_IDS),
-          ),
-        };
-        await setGlobalSolverSettings(next);
-        currentSettings = next;
-        await refreshAllGlobalSettingsSections();
-        showToast({
-          type: "success",
-          title: "Global Settings Saved",
-          message: "",
-          timeoutMs: 2600,
-        });
-      } catch (error) {
-        log("debug", "[EA Data] Global settings save failed", error);
-        showToast({
-          type: "error",
-          title: "Settings Error",
-          message: "Failed to save global settings.",
-          timeoutMs: 6000,
-        });
-      }
-    });
-    on(resetBtn, "click", async (event) => {
-      try {
-        event?.stopPropagation?.();
-      } catch {}
-      try {
-        await resetGlobalSolverSettings();
-        const defaults = getDefaultSolverSettings();
-        sync(defaults, { source: "reset" });
-        await refreshAllGlobalSettingsSections();
-        showToast({
-          type: "info",
-          title: "Global Settings Reset",
-          message: "",
-          timeoutMs: 2600,
-        });
-      } catch (error) {
-        log("debug", "[EA Data] Global settings reset failed", error);
-        showToast({
-          type: "error",
-          title: "Settings Error",
-          message: "Failed to reset global settings.",
-          timeoutMs: 6000,
-        });
-      }
-    });
-    on(clearExcludedBtn, "click", async (event) => {
-      try {
-        event?.stopPropagation?.();
-      } catch {}
-      if (exclusionActionInFlight) return;
-      exclusionActionInFlight = true;
-      renderExcludedPlayersList(currentSettings?.excludedPlayerIds ?? []);
-      try {
-        const excludedPlayerIds = await clearGlobalExcludedPlayerIds();
-        currentSettings = {
-          ...currentSettings,
-          excludedPlayerIds,
-        };
-        renderExcludedPlayersList(excludedPlayerIds);
-        await refreshAllGlobalSettingsSections();
-        showToast({
-          type: "success",
-          title: "Excluded Players Cleared",
-          message: "",
-          timeoutMs: 2600,
-        });
-      } catch (error) {
-        log("debug", "[EA Data] Clear excluded players failed", error);
-        showToast({
-          type: "error",
-          title: "Settings Error",
-          message: "Failed to clear excluded players.",
-          timeoutMs: 6000,
-        });
-      } finally {
-        exclusionActionInFlight = false;
-        renderExcludedPlayersList(currentSettings?.excludedPlayerIds ?? []);
-      }
-    });
-    on(excludedListEl, "click", async (event) => {
-      const target = event?.target ?? null;
-      const removeBtn =
-        target?.closest?.('button[data-action="remove-excluded"]') ?? null;
-      if (!removeBtn || exclusionActionInFlight) return;
-      const id = normalizePlayerId(removeBtn.getAttribute("data-id"));
-      if (!id) return;
-      exclusionActionInFlight = true;
-      renderExcludedPlayersList(currentSettings?.excludedPlayerIds ?? []);
-      try {
-        const nextIds = normalizePlayerIdList(
-          (currentSettings?.excludedPlayerIds ?? []).filter(
-            (entry) => String(entry) !== String(id),
-          ),
-          [],
-        );
-        const excludedPlayerIds = await setGlobalExcludedPlayerIds(nextIds);
-        currentSettings = {
-          ...currentSettings,
-          excludedPlayerIds,
-        };
-        renderExcludedPlayersList(excludedPlayerIds);
-        await refreshAllGlobalSettingsSections();
-      } catch (error) {
-        log("debug", "[EA Data] Remove excluded player failed", error);
-        showToast({
-          type: "error",
-          title: "Settings Error",
-          message: "Failed to update excluded players.",
-          timeoutMs: 6000,
-        });
-      } finally {
-        exclusionActionInFlight = false;
-        renderExcludedPlayersList(currentSettings?.excludedPlayerIds ?? []);
-      }
-    });
-    on(excludedLeagueSearchInput, "input", () => {
-      excludedLeagueSearchValue = String(
-        excludedLeagueSearchInput?.value ?? "",
-      );
-      renderExcludedLeagueOptions(currentSettings?.excludedLeagueIds ?? []);
-    });
-    on(clearExcludedLeaguesBtn, "click", async (event) => {
-      try {
-        event?.stopPropagation?.();
-      } catch {}
-      if (excludedLeagueActionInFlight) return;
-      excludedLeagueActionInFlight = true;
-      renderExcludedLeagueChips(currentSettings?.excludedLeagueIds ?? []);
-      renderExcludedLeagueOptions(currentSettings?.excludedLeagueIds ?? []);
-      try {
-        const excludedLeagueIds = await clearGlobalExcludedLeagueIds();
-        currentSettings = {
-          ...currentSettings,
-          excludedLeagueIds,
-        };
-        renderExcludedLeagueChips(excludedLeagueIds);
-        renderExcludedLeagueOptions(excludedLeagueIds);
-        await refreshAllGlobalSettingsSections();
-        showToast({
-          type: "success",
-          title: "Excluded Leagues Cleared",
-          message: "",
-          timeoutMs: 2600,
-        });
-      } catch (error) {
-        log("debug", "[EA Data] Clear excluded leagues failed", error);
-        showToast({
-          type: "error",
-          title: "Settings Error",
-          message: "Failed to clear excluded leagues.",
-          timeoutMs: 6000,
-        });
-      } finally {
-        excludedLeagueActionInFlight = false;
-        renderExcludedLeagueChips(currentSettings?.excludedLeagueIds ?? []);
-        renderExcludedLeagueOptions(currentSettings?.excludedLeagueIds ?? []);
-      }
-    });
-    on(excludedLeagueSelectedEl, "click", async (event) => {
-      const target = event?.target ?? null;
-      const removeBtn =
-        target?.closest?.('button[data-action="remove-excluded-league"]') ??
-        null;
-      if (!removeBtn || excludedLeagueActionInFlight) return;
-      const leagueId = normalizeLeagueId(removeBtn.getAttribute("data-id"));
-      if (!leagueId) return;
-      excludedLeagueActionInFlight = true;
-      renderExcludedLeagueChips(currentSettings?.excludedLeagueIds ?? []);
-      try {
-        const nextIds = normalizeLeagueIdList(
-          (currentSettings?.excludedLeagueIds ?? []).filter(
-            (entry) => String(entry) !== String(leagueId),
-          ),
-          [],
-        );
-        const excludedLeagueIds = await setGlobalExcludedLeagueIds(nextIds);
-        currentSettings = {
-          ...currentSettings,
-          excludedLeagueIds,
-        };
-        renderExcludedLeagueChips(excludedLeagueIds);
-        renderExcludedLeagueOptions(excludedLeagueIds);
-        await refreshAllGlobalSettingsSections();
-      } catch (error) {
-        log("debug", "[EA Data] Remove excluded league failed", error);
-        showToast({
-          type: "error",
-          title: "Settings Error",
-          message: "Failed to update excluded leagues.",
-          timeoutMs: 6000,
-        });
-      } finally {
-        excludedLeagueActionInFlight = false;
-        renderExcludedLeagueChips(currentSettings?.excludedLeagueIds ?? []);
-        renderExcludedLeagueOptions(currentSettings?.excludedLeagueIds ?? []);
-      }
-    });
-    on(excludedLeagueListEl, "click", async (event) => {
-      const target = event?.target ?? null;
-      const row =
-        target?.closest?.(".ea-data-excluded-leagues-option[data-id]") ?? null;
-      if (!row || excludedLeagueActionInFlight) return;
-      const leagueId = normalizeLeagueId(row.getAttribute("data-id"));
-      if (!leagueId) return;
-
-      const excludedSet = new Set(
-        normalizeLeagueIdList(currentSettings?.excludedLeagueIds ?? [], []),
-      );
-      const currentlyExcluded = excludedSet.has(String(leagueId));
-      if (currentlyExcluded) excludedSet.delete(String(leagueId));
-      else excludedSet.add(String(leagueId));
-
-      excludedLeagueActionInFlight = true;
-      renderExcludedLeagueOptions(currentSettings?.excludedLeagueIds ?? []);
-      try {
-        const excludedLeagueIds = await setGlobalExcludedLeagueIds(
-          Array.from(excludedSet),
-        );
-        currentSettings = {
-          ...currentSettings,
-          excludedLeagueIds,
-        };
-        renderExcludedLeagueChips(excludedLeagueIds);
-        renderExcludedLeagueOptions(excludedLeagueIds);
-        await refreshAllGlobalSettingsSections();
-      } catch (error) {
-        log("debug", "[EA Data] Toggle excluded league failed", error);
-        showToast({
-          type: "error",
-          title: "Settings Error",
-          message: "Failed to update excluded leagues.",
-          timeoutMs: 6000,
-        });
-      } finally {
-        excludedLeagueActionInFlight = false;
-        renderExcludedLeagueChips(currentSettings?.excludedLeagueIds ?? []);
-        renderExcludedLeagueOptions(currentSettings?.excludedLeagueIds ?? []);
-      }
-    });
-    on(excludedNationSearchInput, "input", () => {
-      excludedNationSearchValue = String(
-        excludedNationSearchInput?.value ?? "",
-      );
-      renderExcludedNationOptions(currentSettings?.excludedNationIds ?? []);
-    });
-    on(clearExcludedNationsBtn, "click", async (event) => {
-      try {
-        event?.stopPropagation?.();
-      } catch {}
-      if (excludedNationActionInFlight) return;
-      excludedNationActionInFlight = true;
-      renderExcludedNationChips(currentSettings?.excludedNationIds ?? []);
-      renderExcludedNationOptions(currentSettings?.excludedNationIds ?? []);
-      try {
-        const excludedNationIds = await clearGlobalExcludedNationIds();
-        currentSettings = {
-          ...currentSettings,
-          excludedNationIds,
-        };
-        renderExcludedNationChips(excludedNationIds);
-        renderExcludedNationOptions(excludedNationIds);
-        await refreshAllGlobalSettingsSections();
-        showToast({
-          type: "success",
-          title: "Excluded Nations Cleared",
-          message: "",
-          timeoutMs: 2600,
-        });
-      } catch (error) {
-        log("debug", "[EA Data] Clear excluded nations failed", error);
-        showToast({
-          type: "error",
-          title: "Settings Error",
-          message: "Failed to clear excluded nations.",
-          timeoutMs: 6000,
-        });
-      } finally {
-        excludedNationActionInFlight = false;
-        renderExcludedNationChips(currentSettings?.excludedNationIds ?? []);
-        renderExcludedNationOptions(currentSettings?.excludedNationIds ?? []);
-      }
-    });
-    on(excludedNationSelectedEl, "click", async (event) => {
-      const target = event?.target ?? null;
-      const removeBtn =
-        target?.closest?.('button[data-action="remove-excluded-nation"]') ??
-        null;
-      if (!removeBtn || excludedNationActionInFlight) return;
-      const nationId = normalizeNationId(removeBtn.getAttribute("data-id"));
-      if (!nationId) return;
-      excludedNationActionInFlight = true;
-      renderExcludedNationChips(currentSettings?.excludedNationIds ?? []);
-      try {
-        const nextIds = normalizeNationIdList(
-          (currentSettings?.excludedNationIds ?? []).filter(
-            (entry) => String(entry) !== String(nationId),
-          ),
-          [],
-        );
-        const excludedNationIds = await setGlobalExcludedNationIds(nextIds);
-        currentSettings = {
-          ...currentSettings,
-          excludedNationIds,
-        };
-        renderExcludedNationChips(excludedNationIds);
-        renderExcludedNationOptions(excludedNationIds);
-        await refreshAllGlobalSettingsSections();
-      } catch (error) {
-        log("debug", "[EA Data] Remove excluded nation failed", error);
-        showToast({
-          type: "error",
-          title: "Settings Error",
-          message: "Failed to update excluded nations.",
-          timeoutMs: 6000,
-        });
-      } finally {
-        excludedNationActionInFlight = false;
-        renderExcludedNationChips(currentSettings?.excludedNationIds ?? []);
-        renderExcludedNationOptions(currentSettings?.excludedNationIds ?? []);
-      }
-    });
-    on(excludedNationListEl, "click", async (event) => {
-      const target = event?.target ?? null;
-      const row =
-        target?.closest?.(".ea-data-excluded-leagues-option[data-id]") ?? null;
-      if (!row || excludedNationActionInFlight) return;
-      const nationId = normalizeNationId(row.getAttribute("data-id"));
-      if (!nationId) return;
-
-      const excludedSet = new Set(
-        normalizeNationIdList(currentSettings?.excludedNationIds ?? [], []),
-      );
-      const currentlyExcluded = excludedSet.has(String(nationId));
-      if (currentlyExcluded) excludedSet.delete(String(nationId));
-      else excludedSet.add(String(nationId));
-
-      excludedNationActionInFlight = true;
-      renderExcludedNationOptions(currentSettings?.excludedNationIds ?? []);
-      try {
-        const excludedNationIds = await setGlobalExcludedNationIds(
-          Array.from(excludedSet),
-        );
-        currentSettings = {
-          ...currentSettings,
-          excludedNationIds,
-        };
-        renderExcludedNationChips(excludedNationIds);
-        renderExcludedNationOptions(excludedNationIds);
-        await refreshAllGlobalSettingsSections();
-      } catch (error) {
-        log("debug", "[EA Data] Toggle excluded nation failed", error);
-        showToast({
-          type: "error",
-          title: "Settings Error",
-          message: "Failed to update excluded nations.",
-          timeoutMs: 6000,
-        });
-      } finally {
-        excludedNationActionInFlight = false;
-        renderExcludedNationChips(currentSettings?.excludedNationIds ?? []);
-        renderExcludedNationOptions(currentSettings?.excludedNationIds ?? []);
-      }
-    });
-
-    try {
-      view.__eaDataGlobalSettingsSection = section;
-      view.__eaDataGlobalSettingsState = {
-        section,
-        listeners,
-        sync,
-      };
-      globalSettingsStateRegistry.add(view.__eaDataGlobalSettingsState);
-    } catch {}
-
-    sync(getDefaultSolverSettings(), {
-      source: "init",
-    });
-    void refreshGlobalSettingsSection(view);
-    return section;
+  const ensureGlobalSettingsSection = view => {
+    // Clean up an old mounted section after a hot update; the EA settings remain native.
+    cleanupGlobalSettingsSection(view);
+    installAutopilotSettingsTab();
+    return null;
   };
 
   // Multi-solve overlay (repeatable SBC)
@@ -11236,6 +10331,7 @@
       ".ut-content-dialog-view",
       ".ut-click-shield-container",
       ".ut-game-rewards-view",
+      ".game-rewards-view",
       ".popup",
       ".dialog",
       ".modal",
@@ -11248,6 +10344,7 @@
       ".ut-game-rewards-view .btn-standard.call-to-action",
       ".ut-game-rewards-view button.call-to-action",
       ".ut-game-rewards-view .button-container .btn-standard",
+      ".game-rewards-view footer .btn-standard.primary",
     ];
     const scoreText = (text) => {
       const value = String(text ?? "")
@@ -23818,6 +22915,7 @@
     wrapper.classList.add("ea-data-solve-wrapper");
 
     const button = document.createElement("button");
+    button.type = "button";
     button.className = "ea-data-solve-button";
     button.textContent = "Solve Squad";
     button.addEventListener("click", async () => {
@@ -24076,7 +23174,34 @@
               concept: isConcept,
             };
           });
-        const resolvePlayerRefToItem = (ref, lookup) => {
+        const buildApplyDefinitionLookup = (lookup) => {
+          const byDefinition = new Map();
+          if (!(lookup instanceof Map)) return byDefinition;
+          const seenItemIds = new Set();
+          for (const item of lookup.values()) {
+            if (!item || typeof item !== "object") continue;
+            const itemId = item?.id ?? null;
+            if (itemId != null) {
+              const itemKey = String(itemId);
+              if (seenItemIds.has(itemKey)) continue;
+              seenItemIds.add(itemKey);
+            }
+            const definitionId = readNumeric(item?.definitionId);
+            if (definitionId == null) continue;
+            const keys = [definitionId, String(definitionId)];
+            for (const key of keys) {
+              if (!byDefinition.has(key)) byDefinition.set(key, []);
+              byDefinition.get(key).push(item);
+            }
+          }
+          return byDefinition;
+        };
+        const resolvePlayerRefToItem = (
+          ref,
+          lookup,
+          definitionLookup = null,
+          usedItemIds = null,
+        ) => {
           if (!ref) return null;
           const localId = readNumeric(ref?.id);
           const definitionId = readNumeric(ref?.definitionId);
@@ -24087,7 +23212,28 @@
                 null)
               : null;
           if (match && typeof match === "object") {
+            if (match?.id != null) {
+              usedItemIds?.add?.(String(match.id));
+            }
             return ensureSquadPlayerApi(match);
+          }
+          if (definitionId != null) {
+            const definitionMatches =
+              definitionLookup?.get?.(definitionId) ??
+              definitionLookup?.get?.(String(definitionId)) ??
+              [];
+            const ownedMatch = (Array.isArray(definitionMatches)
+              ? definitionMatches
+              : []
+            ).find((item) => {
+              const itemId = item?.id ?? null;
+              if (itemId == null || itemId === 0) return false;
+              return !usedItemIds?.has?.(String(itemId));
+            });
+            if (ownedMatch && typeof ownedMatch === "object") {
+              usedItemIds?.add?.(String(ownedMatch.id));
+              return ensureSquadPlayerApi(ownedMatch);
+            }
           }
           return createConceptItemFromDefinition(definitionId);
         };
@@ -24097,6 +23243,8 @@
           lookup,
           slotSolution,
         }) => {
+          const definitionLookup = buildApplyDefinitionLookup(lookup);
+          const usedItemIds = new Set();
           const slots = Array.isArray(squad?.getPlayers?.())
             ? squad.getPlayers()
             : [];
@@ -24117,11 +23265,18 @@
                 slotIndex >= list.length
               )
                 continue;
-              list[slotIndex] = resolvePlayerRefToItem(refs[i], lookup);
+              list[slotIndex] = resolvePlayerRefToItem(
+                refs[i],
+                lookup,
+                definitionLookup,
+                usedItemIds,
+              );
             }
             return list;
           }
-          return refs.map((ref) => resolvePlayerRefToItem(ref, lookup));
+          return refs.map((ref) =>
+            resolvePlayerRefToItem(ref, lookup, definitionLookup, usedItemIds),
+          );
         };
         const applyConceptPlanToChallengeUi = async ({
           challenge,
@@ -24152,6 +23307,7 @@
             raw: true,
             includeUnassigned: true,
             refreshUnassigned: true,
+            includeTransfer: true,
             excludeActiveSquad: false,
           });
           const backupPlayers = Array.isArray(challenge.squad.getPlayers?.())
@@ -24819,14 +23975,9 @@
       }
     });
 
-    const referenceButton = root.querySelector(
-      "button.btn-standard:not(.ea-data-solve-button)",
-    );
-    if (referenceButton?.className) {
-      button.className = `${referenceButton.className} ea-data-solve-button`;
-    } else {
-      button.className = "btn-standard call-to-action ea-data-solve-button";
-    }
+    // EA's Exchange Players control is disabled for an incomplete squad.
+    // Its state classes disable pointer events, so only share the base styles.
+    button.className = "btn-standard call-to-action ea-data-solve-button";
 
     const settingsButton = document.createElement("button");
     settingsButton.type = "button";
@@ -25015,6 +24166,13 @@
         profilesFetched: conceptDiagnostics.profilesFetched ?? 0,
         candidatesFetched: conceptDiagnostics.candidatesFetched ?? 0,
         candidatesKept: conceptDiagnostics.candidatesKept ?? 0,
+        ownedPlayerCount: conceptDiagnostics.ownedPlayerCount ?? null,
+        ownedDefinitionCount:
+          conceptDiagnostics.ownedDefinitionCount ?? null,
+        ownedDefinitionSample:
+          conceptDiagnostics.ownedDefinitionSample ?? [],
+        recentConceptPurchases:
+          conceptDiagnostics.recentConceptPurchases ?? null,
         rejectedByReason: conceptDiagnostics.rejectedByReason ?? {},
         retry: conceptDiagnostics.retry ?? null,
         retryPoolSelection: conceptDiagnostics.retryPoolSelection ?? null,
@@ -25329,6 +24487,16 @@
     CARD_BUCKETS.map((bucket) => bucket.key),
   );
   const CARD_BUCKET_KEY_SET = new Set(CARD_BUCKET_KEYS);
+  // Stored bucket keys remain compatible with existing solver preferences.
+  // FC27 panels expose player quality, with both historical keys per choice.
+  const CARD_QUALITIES = Object.freeze([
+    { key: "bronze", label: "Bronze", ratingLabel: "0\u201364 OVR" },
+    { key: "silver", label: "Silver", ratingLabel: "65\u201374 OVR" },
+    { key: "gold", label: "Gold", ratingLabel: "75\u201399 OVR" },
+  ].map(quality => Object.freeze({
+    ...quality,
+    bucketKeys: Object.freeze(CARD_BUCKETS.filter(bucket => bucket.quality === quality.key).map(bucket => bucket.key)),
+  })));
 
   const normalizeCardBucketValue = (value) => {
     if (value == null) return null;
@@ -25624,22 +24792,24 @@
   } = {}) => `
     <div class="ea-data-card-bucket-picker" data-card-bucket-group>
       <div class="ea-data-card-bucket-picker__grid">
-        ${CARD_BUCKETS.map((bucket) => {
+        ${CARD_QUALITIES.map((bucket) => {
           const id = `${idPrefix}${bucket.key}`;
           return `
-            <label class="ea-data-card-bucket" data-bucket="${bucket.key}" data-quality="${bucket.quality}" for="${id}">
+            <label class="ea-data-card-bucket" data-quality="${bucket.key}" for="${id}">
               <input
                 id="${id}"
                 type="checkbox"
                 value="${bucket.key}"
-                data-card-bucket="${bucket.key}"
+                data-card-quality="${bucket.key}"
+                aria-label="Allow ${bucket.key} players"
                 ${disabled ? "disabled" : ""}
               />
-              <span class="ea-data-card-bucket__swatch" aria-hidden="true"></span>
+              <svg class="ea-data-card-quality-icon" viewBox="0 0 36 48" fill="none" aria-hidden="true"><path d="M4 3h28v32L18 45 4 35V3Z" fill="currentColor" fill-opacity=".18" stroke="currentColor" stroke-width="1.5"/><path d="M9 10h18M9 14h11M9 32l9 6 9-6" stroke="currentColor" stroke-width="1.5"/></svg>
               <span class="ea-data-card-bucket__copy">
                 <span class="ea-data-card-bucket__title">${escapeHtml(bucket.label)}</span>
-                <span class="ea-data-card-bucket__meta">${escapeHtml(bucket.rarity)}</span>
+                <span class="ea-data-card-bucket__meta">${escapeHtml(bucket.ratingLabel)}</span>
               </span>
+              <span class="ea-data-card-quality-state" aria-hidden="true"><svg viewBox="0 0 20 20" fill="none"><path d="m4 10 4 4 8-8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
             </label>
           `;
         }).join("")}
@@ -25653,13 +24823,24 @@
     idPrefix = "ea-data-card-bucket-",
     onChange = null,
   } = {}) => {
-    const controls = CARD_BUCKETS.map((bucket) => ({
+    const controls = CARD_QUALITIES.map((bucket) => ({
       bucket,
       input:
         root?.querySelector?.(`#${idPrefix}${bucket.key}`) ??
-        root?.querySelector?.(`[data-card-bucket="${bucket.key}"]`) ??
+        root?.querySelector?.(`[data-card-quality="${bucket.key}"]`) ??
         null,
     }));
+    let disabled = controls.every(entry => entry.input?.disabled);
+    const syncDisabled = () => {
+      const selected = controls.filter(entry => entry.input?.checked);
+      for (const {input} of controls) {
+        if (!input) continue;
+        const lastChoice = !disabled && input.checked && selected.length === 1;
+        input.disabled = disabled || lastChoice;
+        input.closest?.("label")?.setAttribute("data-only-quality", String(lastChoice));
+        input.title = lastChoice ? "Keep at least one player quality enabled." : "";
+      }
+    };
     const warningEl = root?.querySelector?.(
       ".ea-data-card-bucket-picker__warning",
     );
@@ -25683,7 +24864,7 @@
       const selected = [];
       for (const { bucket, input } of controls) {
         if (!bucket || !input?.checked) continue;
-        selected.push(bucket.key);
+        selected.push(...bucket.bucketKeys);
       }
       return normalizeAllowedCardBuckets(selected, CARD_BUCKET_KEYS);
     };
@@ -25700,11 +24881,12 @@
       for (const { bucket, input } of controls) {
         if (!bucket || !input) continue;
         try {
-          input.checked = selectedSet.has(bucket.key);
+          input.checked = bucket.bucketKeys.some(key => selectedSet.has(key));
         } catch {}
       }
       setWarning("");
-      return { allowedCardBuckets: selected };
+      syncDisabled();
+      return getValues();
     };
     const getValues = (fallback = null) => {
       const selected = readSnapshot();
@@ -25715,26 +24897,21 @@
         ),
       };
     };
-    const setDisabled = (disabled) => {
-      const nextDisabled = Boolean(disabled);
-      for (const { input } of controls) {
-        if (!input) continue;
-        try {
-          input.disabled = nextDisabled;
-        } catch {}
-      }
-    };
+    const setDisabled = value => {disabled = Boolean(value);syncDisabled();};
     for (const { input } of controls) {
       input?.addEventListener?.("change", () => {
+        if (disabled) return;
         const checkedInputs = controls.filter((entry) => entry.input?.checked);
         if (!checkedInputs.length) {
           try {
             input.checked = true;
           } catch {}
-          setWarning("Keep at least one card type enabled.");
+          syncDisabled();
+          setWarning("Keep at least one player quality enabled.");
           return;
         }
         setWarning("");
+        syncDisabled();
         if (typeof onChange === "function") {
           onChange(getValues());
         }
@@ -26895,6 +26072,106 @@
       // a stale single-solver/global snapshot inside the saved step.
       excludedPlayerIds: [],
     };
+  };
+
+  const mergePlayersByItemId = (...sources) => {
+    const merged = [];
+    const seen = new Set();
+    for (const source of sources) {
+      for (const player of Array.isArray(source) ? source : []) {
+        if (!player || player?.id == null) continue;
+        const key = String(player.id);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        merged.push(player);
+      }
+    }
+    return merged;
+  };
+
+  const fetchRecentConceptPurchasePlayers = async ({
+    definitionIds = [],
+    ignoreLoaned = true,
+  } = {}) => {
+    const ids = Array.from(
+      new Set(
+        (definitionIds ?? [])
+          .map(readNumeric)
+          .filter((value) => value != null),
+      ),
+    );
+    const diagnostics = {
+      requestedDefinitionIds: ids,
+      remembered: 0,
+      found: 0,
+      bySource: {},
+      error: null,
+    };
+    if (!ids.length) return { players: [], diagnostics };
+    const idSet = new Set(ids.map(String));
+    const matchesDefinition = (item) => {
+      const defId = item?.definitionId ?? null;
+      return defId != null && idSet.has(String(defId));
+    };
+    const addSourceCount = (source, count) => {
+      diagnostics.bySource[source] =
+        (readNumeric(diagnostics.bySource[source]) ?? 0) +
+        (readNumeric(count) ?? 0);
+    };
+    const rememberedPlayers = getRecentConceptPurchasePlayersSnapshot(ids);
+    diagnostics.remembered = rememberedPlayers.length;
+    addSourceCount("recent_purchase", rememberedPlayers.length);
+
+    try {
+      const [clubItems, storageItems, unassignedItems, transferResult] =
+        await Promise.all([
+          getClubItems({
+            ignoreLoaned,
+            excludeActiveSquad: false,
+            dedupe: false,
+            skipStats: true,
+            playerIds: ids,
+          }).catch(() => []),
+          getStorageItems({ playerIds: ids }).catch(() => []),
+          getUnassignedItems({ refresh: true })
+            .then((items) => (items ?? []).filter(matchesDefinition))
+            .catch(() => []),
+          getTransferListItems().catch(() => ({
+            unSoldItems: [],
+            availableItems: [],
+          })),
+        ]);
+      const transferItems = (transferResult?.unSoldItems ?? [])
+        .concat(transferResult?.availableItems ?? [])
+        .filter(matchesDefinition);
+      const duplicateDefIds = buildDuplicateDefIdSet(
+        (unassignedItems ?? []).concat(transferItems ?? []),
+      );
+      const toPlainList = (items, source) => {
+        const list = (items ?? [])
+          .filter(matchesDefinition)
+          .filter((item) => {
+            if (ignoreLoaned && item?.isLimitedUse?.()) return false;
+            return !item?.isEnrolledInAcademy?.();
+          })
+          .map((item) => toPlainPlayer(item, { duplicateDefIds, source }));
+        addSourceCount(source, list.length);
+        return list;
+      };
+      const players = mergePlayersByItemId(
+        rememberedPlayers,
+        toPlainList(clubItems, "club"),
+        toPlainList(storageItems, "storage"),
+        toPlainList(unassignedItems, "unassigned"),
+        toPlainList(transferItems, "transfer"),
+      );
+      diagnostics.found = players.length;
+      return { players, diagnostics };
+    } catch (error) {
+      diagnostics.error = String(error?.message ?? error);
+      diagnostics.found = rememberedPlayers.length;
+      return { players: rememberedPlayers, diagnostics };
+    }
   };
 
   const createDefaultSequenceStep = ({
@@ -29206,6 +28483,14 @@
         .filter((id) => id != null)
         .map(String),
     );
+    diagnostics.ownedPlayerCount = Array.isArray(ownedPlayers)
+      ? ownedPlayers.length
+      : 0;
+    diagnostics.ownedDefinitionCount = ownedDefinitionIds.size;
+    diagnostics.ownedDefinitionSample = Array.from(ownedDefinitionIds).slice(
+      0,
+      20,
+    );
     const keptDefinitionIds = new Set();
     const candidateGroups = [];
     for (const profile of profiles) {
@@ -29917,6 +29202,8 @@
       ownedPlayers: players,
       filters,
     });
+    diagnostics.recentConceptPurchases =
+      payload?.recentConceptPurchases ?? null;
     diagnostics.futggFastPath = futggFastDiagnostics;
     if (!candidates.length)
       return attachConceptDiagnostics(baseResult, diagnostics);
@@ -33287,8 +32574,211 @@
     }, 15000);
   };
 
+  // Points SBCs use owned item scores and native selection, never squad slots.
+  const gatherPointsCandidates = async (controller, settings) => {
+    const model = controller.getViewModel();
+    const challenge = model.getChallenge();
+    const selected = new Set(model.getSelectedItemIds().map(String));
+    const activeDefinitions = new Set((await getActiveSquadPlayerIds()).map(String));
+    const duplicateDefIds = settings.useUnassigned
+      ? buildDuplicateDefIdSet(await getUnassignedItems()) : new Set();
+    const candidates = new Map();
+    const tabs = window.OneClickSBCWorkAreaTab;
+    const piles = window.PileSearchType;
+    if (!tabs || !piles) throw new Error("EA's points player-search hooks are unavailable.");
+    const sources = settings.onlyStorage ? ["storage"] : ["storage", "club"];
+    let truncated = false;
+    for (const source of sources) {
+      const tab = source === "storage" ? tabs.STORAGE : tabs.CLUB;
+      let offset = 0;
+      let finished = false;
+      while (!finished && offset < 2000) {
+        if (currentPointsController !== controller) throw new Error("Points SBC closed. Selection was not changed.");
+        const criteria = new window.UTSearchCriteriaDTO();
+        criteria.sbcChallengeId = challenge.id;
+        criteria.pileSearchType = source === "storage" ? piles.STORAGE : piles.CLUB;
+        criteria.sort = window.SearchSortOrder.ASCENDING;
+        criteria.untradeables = window.SearchUntradeables.DEFAULT;
+        criteria.count = offset === 0 ? model.getSelectionLimit() * 2 + 1 : model.getSelectionLimit() + 1;
+        criteria.offset = offset;
+        if (services.Item.isFavoritePlayersEnabled()) criteria.isFavorite = false;
+        const response = await sbcApiCall("points.eligiblePlayers", () =>
+          observableToPromise(services.Club.search(criteria)));
+        if (!response?.success || !Array.isArray(response.data?.items)) {
+          log("warn", "[EA Data] Points eligibility failed " + JSON.stringify({ source, criteria, status: response?.status, error: response?.error }));
+          throw new Error(`EA ${source} eligible-player search failed (${response?.status ?? response?.error ?? "no response"}). Selection was not changed.`);
+        }
+        const items = response.data.items;
+        for (const item of items) {
+          if (selected.has(String(item.id)) || item.concept || item.isFavorite ||
+              item.isLimitedUse?.() || item.isEnrolledInAcademy?.() ||
+              activeDefinitions.has(String(item.definitionId)) ||
+              services.SBC.isItemInSquad(Number(item.id))) continue;
+          const player = toPlainPlayer(item, { source, duplicateDefIds });
+          player.sbsScore = Number(item.sbsScore);
+          candidates.set(String(item.id), { item, player, tab });
+        }
+        offset += items.length;
+        finished = Boolean(response.data.retrievedAll) || items.length === 0;
+        if (!finished) await delayMs(300);
+      }
+      if (!finished) truncated = true;
+    }
+    const { filteredPlayers } = filterPlayersBySolverPoolSettings(
+      [...candidates.values()].map(entry => entry.player), settings);
+    return { candidates, players: filteredPlayers, truncated };
+  };
+
+  const applyPointsSelection = (model, candidates, result, expectedIds, expectedScore) => {
+    const sameSelection = () => {
+      const ids = model.getSelectedItemIds().map(String).sort();
+      return JSON.stringify(ids) === JSON.stringify(expectedIds.slice().sort()) &&
+        model.getSelectedScore() === expectedScore;
+    };
+    if (!sameSelection()) throw new Error("Selection changed while solving. Run Solve Points again.");
+    const ids = result.selectedIds;
+    if (!Array.isArray(ids) || new Set(ids.map(String)).size !== ids.length ||
+        ids.length + expectedIds.length > model.getSelectionLimit())
+      throw new Error("Invalid points solver selection. Selection was not changed.");
+    const entries = ids.map(id => candidates.get(String(id)));
+    if (entries.some(entry => !entry || expectedIds.includes(String(entry.item.id))) ||
+        entries.reduce((sum, entry) => sum + Number(entry.item.sbsScore), 0) !== result.selectedScore)
+      throw new Error("EA item scores changed. Run Solve Points again.");
+    const added = [];
+    try {
+      for (const entry of entries) {
+        const { item, tab } = entry;
+        model._itemEntityMap.set(item.id, item);
+        model._itemScoreMap.set(item.id, item.sbsScore);
+        model._itemTabMap.set(item.id, tab);
+        if (!model.selectItem(item)) throw new Error("EA rejected the points selection.");
+        added.push(item);
+      }
+      if (model.getSelectedScore() !== expectedScore + result.selectedScore)
+        throw new Error("EA selection score did not match the solver.");
+    } catch (error) {
+      added.forEach(item => model.deselectItem(item));
+      throw error;
+    }
+  };
+
+  const syncPointsSelectionStatus = (controller) => {
+    const model = controller.getViewModel?.();
+    const actions = controller.getView?.()?.getRootElement?.()?.querySelector(".ea-data-points-actions");
+    if (!model || !actions?.dataset?.result) return;
+    try {
+      const result = JSON.parse(actions.dataset.result);
+      if (result.totalSelectedScore !== model.getSelectedScore() || result.totalSelectedCount !== model.getSelectedCount()) {
+        delete actions.dataset.result;
+        actions.querySelector(".ea-data-points-status").textContent = "Selection changed. Run Solve Points to update it.";
+      }
+    } catch {}
+  };
+
+  const mountPointsSolver = (controller) => {
+    const model = controller.getViewModel?.();
+    const root = controller.getView?.()?.getRootElement?.();
+    if (!model || !root || root.querySelector(".ea-data-points-actions")) return;
+    const toolbar = root.querySelector(".ut-one-click-sbc-work-area-view--toolbar");
+    if (!toolbar) return;
+    const actions = document.createElement("div");
+    actions.className = "ea-data-points-actions";
+    actions.style.cssText = "display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:8px";
+    const solve = document.createElement("button");
+    solve.type = "button";
+    solve.className = "btn-standard call-to-action ea-data-points-solve";
+    solve.textContent = "Solve Points";
+    const settings = document.createElement("button");
+    settings.type = "button";
+    settings.className = "btn-standard";
+    settings.textContent = "Solver Settings";
+    settings.addEventListener("click", () => {
+      currentChallenge = model.getChallenge();
+      currentSbcSet = model.getSet();
+      void openSettingsOverlay();
+    });
+    const status = document.createElement("span");
+    status.className = "ea-data-points-status";
+    status.textContent = "Owned players only. Review the selection before submitting.";
+    actions.append(solve, settings, status);
+    toolbar.appendChild(actions);
+    solve.addEventListener("click", async () => {
+      solve.disabled = true;
+      status.textContent = "Loading eligible players…";
+      try {
+        const challenge = model.getChallenge();
+        const selectedIds = model.getSelectedItemIds().map(String);
+        const selectedScore = model.getSelectedScore();
+        const submittedScore = challenge.submittedScore;
+        const settings = await getSolverSettingsForChallenge(challenge.id);
+        const pool = await gatherPointsCandidates(controller, settings);
+        if (!await initSolverBridge()) throw new Error("Solver bridge is unavailable.");
+        status.textContent = "Finding a points selection…";
+        const result = await callSolverBridge("SOLVE_POINTS", {
+          players: pool.players, scoreRequirement: challenge.scoreRequirement,
+          submittedScore, selectedScore,
+          selectionLimit: model.getSelectionLimit() - selectedIds.length,
+        });
+        if (!result?.ok) throw new Error(result?.error?.message ?? "Points solver failed.");
+        if (currentPointsController !== controller || !root.isConnected ||
+            challenge.submittedScore !== submittedScore)
+          throw new Error("Points SBC changed while solving. Selection was not changed.");
+        applyPointsSelection(model, pool.candidates, result, selectedIds, selectedScore);
+        controller._refreshCurrentPage();
+        status.textContent = `${result.selectedIds.length} players added, ${result.selectedScore} points. ` +
+          (result.complete ? "Target reached. Review Selection to continue." :
+            `${result.remainingAfterSelection} points still needed. Review this batch or adjust settings.`) +
+          (pool.truncated ? " Candidate search capped at 2,000 items per pile." : "");
+        actions.dataset.result = JSON.stringify({ ...result, totalSelectedScore: model.getSelectedScore(), totalSelectedCount: model.getSelectedCount(), candidates: pool.players.length, poolTruncated: pool.truncated });
+        log("info", "[EA Data] Points selection " + actions.dataset.result);
+      } catch (error) {
+        status.textContent = error?.message ?? String(error);
+        log("warn", "[EA Data] Points solve failed: " + status.textContent);
+      } finally { solve.disabled = false; }
+    });
+  };
+
+  const hookPointsWorkAreaController = () => {
+    if (pointsWorkAreaHooked) return true;
+    const prototype = window.UTOneClickSBCWorkAreaViewController?.prototype;
+    if (!prototype?.viewDidAppear || !prototype?.viewWillDisappear || !prototype?._refreshCurrentPage || !prototype?._refreshSelectionControls) return false;
+    const appear = prototype.viewDidAppear;
+    prototype.viewDidAppear = function (...args) {
+      const result = appear.apply(this, args);
+      currentPointsController = this;
+      currentChallenge = this.getViewModel()?.getChallenge() ?? null;
+      currentSbcSet = this.getViewModel()?.getSet() ?? null;
+      currentSlotPlan = null;
+      mountPointsSolver(this);
+      return result;
+    };
+    const refresh = prototype._refreshCurrentPage;
+    prototype._refreshCurrentPage = function (...args) {
+      const result = refresh.apply(this, args);
+      if (currentPointsController === this) { mountPointsSolver(this); syncPointsSelectionStatus(this); }
+      return result;
+    };
+    const selectionControls = prototype._refreshSelectionControls;
+    prototype._refreshSelectionControls = function (...args) {
+      const result = selectionControls.apply(this, args);
+      syncPointsSelectionStatus(this);
+      return result;
+    };
+    const disappear = prototype.viewWillDisappear;
+    prototype.viewWillDisappear = function (...args) {
+      if (currentPointsController === this) {
+        currentPointsController = null;
+        currentChallenge = null;
+      }
+      return disappear.apply(this, args);
+    };
+    pointsWorkAreaHooked = true;
+    return true;
+  };
+
   const areSbcHooksReady = () =>
     sbcPanelHooked &&
+    pointsWorkAreaHooked &&
     sbcOverviewHooked &&
     sbcChallengesHooked &&
     sbcHubHooked &&
@@ -33297,7 +32787,7 @@
     slotActionPanelHooked;
 
   const areAppSettingsHooksReady = () =>
-    appSettingsHooked && appSettingsControllerHooked;
+    appSettingsHooked && appSettingsControllerHooked && Boolean(window.AutopilotSettingsTab?.isInstalled());
 
   const areHomeHooksReady = () => homeHubControllerHooked;
 
@@ -33313,6 +32803,7 @@
     const startedAt = Date.now();
     const maxWaitMs = 30000;
     sbcHookPollingIntervalId = setInterval(() => {
+      const pointsReady = hookPointsWorkAreaController();
       const panelReady = hookSbcChallengePanel();
       const overviewReady = hookSbcOverviewPanel();
       const challengesReady = hookSbcChallengesView();
@@ -33340,6 +32831,7 @@
       }
       if (
         panelReady &&
+        pointsReady &&
         overviewReady &&
         challengesReady &&
         hubReady &&
@@ -33359,6 +32851,7 @@
     const startedAt = Date.now();
     const maxWaitMs = 30000;
     appSettingsHookPollingIntervalId = setInterval(() => {
+      const tabReady = installAutopilotSettingsTab();
       const viewReady = hookAppSettingsView();
       const controllerReady = hookAppSettingsViewController();
       if (Date.now() - startedAt > maxWaitMs) {
@@ -33370,7 +32863,7 @@
         });
         return;
       }
-      if (viewReady && controllerReady) {
+      if (viewReady && controllerReady && tabReady) {
         clearInterval(appSettingsHookPollingIntervalId);
         appSettingsHookPollingIntervalId = null;
       }
@@ -33488,8 +32981,9 @@
           .filter(Boolean)
       : [];
 
-    const storagePile = services?.Item?.UTItemPileEnum?.STORAGE ?? 10;
-    const unassignedPile = services?.Item?.UTItemPileEnum?.UNASSIGNED ?? null;
+    const itemPiles = resolveItemPileEnum();
+    const storagePile = itemPiles.STORAGE ?? 10;
+    const unassignedPile = itemPiles.UNASSIGNED ?? itemPiles.INBOX ?? null;
     const isStorage =
       source === "storage"
         ? true
@@ -33521,7 +33015,10 @@
       definitionId: item.definitionId,
       name: resolvePlayerName(item),
       pile: item.pile,
-      isTradeable: item.isTradeable?.(),
+      isTradeable:
+        typeof item.isTradeable === "function"
+          ? item.isTradeable()
+          : Boolean(item.isTradeable),
       isUntradeable,
       isStorage,
       isUnassigned,
@@ -33809,6 +33306,7 @@
     openSequencePlanner: () => openSequenceSolveOverlay(),
     openWhatsNew: () => openWhatsNewOverlay({ source: "manual" }),
     openChangelog: () => openWhatsNewOverlay({ source: "manual" }),
+    openGlobalSettings: () => window.AutopilotSettingsTab?.open() || false,
     getClubPlayers: (options) =>
       sendToPage("EA_DATA_GET_CLUB_PLAYERS", options).then((data) =>
         logResult("Club players", data),
@@ -34039,6 +33537,7 @@
         clubPlayers,
         storagePlayers,
         unassignedPlayers,
+        transferPlayers,
         duplicateDefIds,
       } = await ensurePlayersSnapshot(solverOptions, {
         force: forcePlayersFetch && !canReuseWarmSnapshot,
@@ -34090,17 +33589,43 @@
       const mergedPlayers = clubPlayers
         .concat(filteredStoragePlayers)
         .concat(Array.isArray(unassignedPlayers) ? unassignedPlayers : [])
+        .concat(Array.isArray(transferPlayers) ? transferPlayers : [])
         .filter((player) => !player?.isEnrolledInAcademy);
-      const excludedStorageIds = buildExcludedStorageIds(
+      const recentConceptDefinitionIds = getRecentConceptPurchaseDefinitionIds();
+      let recentConceptPurchaseDiagnostics = null;
+      let recentConceptPlayers = [];
+      if (recentConceptDefinitionIds.length) {
+        const recentLookup = await fetchRecentConceptPurchasePlayers({
+          definitionIds: recentConceptDefinitionIds,
+          ignoreLoaned: solverOptions?.ignoreLoaned !== false,
+        });
+        recentConceptPlayers = recentLookup.players;
+        recentConceptPurchaseDiagnostics = recentLookup.diagnostics;
+        if (recentConceptPlayers.length) {
+          log("debug", "[EA Data] Solver payload recovered recent concepts", {
+            requestedDefinitionIds:
+              recentConceptPurchaseDiagnostics?.requestedDefinitionIds ?? [],
+            found: recentConceptPurchaseDiagnostics?.found ?? 0,
+            bySource: recentConceptPurchaseDiagnostics?.bySource ?? {},
+          });
+        }
+      }
+      const payloadPlayers = mergePlayersByItemId(
         mergedPlayers,
+        recentConceptPlayers,
+      );
+      const excludedStorageIds = buildExcludedStorageIds(
+        payloadPlayers,
         requiredDuplicates,
       );
       return {
         clubPlayers,
         storagePlayers: filteredStoragePlayers,
         unassignedPlayers,
-        players: mergedPlayers,
+        transferPlayers,
+        players: payloadPlayers,
         _cacheRevision: Number(playersFetchCacheRevision ?? 0),
+        recentConceptPurchases: recentConceptPurchaseDiagnostics,
         openChallenge: openReq,
         formationName,
         requiredPlayers,
@@ -34275,13 +33800,34 @@
       };
     },
     getDebug: () => ({
-      bridgeVersion: "2026-02-22a",
+      bridgeVersion: "2026-10-08-fc27",
       enabled: Boolean(debugEnabled),
       persisted: readPersistedDebugEnabled(),
       solverBridgeReady: Boolean(solverBridgeReady),
       solverBridgeError: solverBridgeError
         ? String(solverBridgeError?.message ?? solverBridgeError)
         : null,
+    }),
+    getWebAppHookStatus: () => ({
+      hooks: {
+        challengePanel: sbcPanelHooked,
+        pointsWorkArea: pointsWorkAreaHooked,
+        squadOverview: sbcOverviewHooked,
+        challenges: sbcChallengesHooked,
+        sbcHub: sbcHubHooked,
+        rewards: gameRewardsHooked,
+        itemDetails: itemDetailsControllerHooked,
+        slotActions: slotActionPanelHooked,
+        settingsTab: Boolean(window.AutopilotSettingsTab?.isInstalled()),
+        settingsView: appSettingsHooked,
+        settingsController: appSettingsControllerHooked,
+        homeController: homeHubControllerHooked,
+        currencyBar: currencyNavBarHooked,
+      },
+      solverBridgeReady: Boolean(solverBridgeReady),
+      challengeId: currentChallenge?.id ?? null,
+      itemPiles: resolveItemPileEnum(),
+      eligibilityKeys: resolveEligibilityKeyEnum(),
     }),
     getSolverPreferences: async ({ force = false } = {}) =>
       getPreferences({ force }),

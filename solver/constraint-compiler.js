@@ -343,7 +343,7 @@ export const compileConstraintSet = (requirementsNormalized = [], options = {}) 
     if (!raw) continue;
 
     const type = normalizeRequirementType(raw);
-    if (!type) {
+    if (!type || !REQUIREMENT_KEYS.includes(type)) {
       unsupportedRules.push(raw);
       continue;
     }

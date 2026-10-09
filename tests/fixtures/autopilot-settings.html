@@ -1,0 +1,29 @@
+<!doctype html><meta charset="utf-8"><title>Autopilot native tab integration fixture</title>
+<style>body{margin:0;background:#101820;color:#eef5f8;font:14px Arial}.fixture-header{height:62px;padding:0 28px;display:flex;align-items:center;gap:25px;border-bottom:1px solid #30414e}.fixture-header strong{font-size:20px}.fixture-body{display:flex;height:calc(100vh - 63px)}#fixture-tabs{width:82px;border-right:1px solid #30414e;flex-shrink:0;display:flex;flex-direction:column}#fixture-tabs button{background:none;border:0;color:inherit;padding:22px 4px;cursor:pointer}#fixture-content{position:relative;flex:1;min-width:0;min-height:0}</style>
+<div class="fixture-header"><strong>AutopilotSBC</strong><span>Native tab integration fixture</span></div><div class="fixture-body"><nav id="fixture-tabs"></nav><main id="fixture-content"></main></div>
+<script src="../../artifacts/autopilotsbc-tab-designs/spec.js"></script>
+<script src="../../page/autopilot-settings-controls.js"></script>
+<script src="../../page/autopilot-settings-tab.js"></script>
+<script>
+class EAView{constructor(){this._generate?.()}init(){}getRootElement(){return this._root}setEventDelegate(){}dealloc(){this.destroyGeneratedElements?.()}}
+class EAViewController{getView(){if(!this.view){this.view=this._getViewInstanceFromData();this.view.init()}return this.view}getNavigationController(){return this.navigation}viewDidAppear(){}}
+class UTGameFlowNavigationController extends EAViewController{initWithRootController(controller){this.root=controller;controller.navigation=this}setNavigationVisibility(){}getView(){return this.root.getView()}}
+class UTTabBarItemView{init(){}setTag(t){this.tag=t}getTag(){return this.tag}setText(t){this.text=t}addClass(){}}
+class UTGameTabBarController{
+  initWithViewControllers(controllers){if(this.initialized)return 'already initialized';this.childViewControllers=controllers;this.initialized=true;const nav=document.getElementById('fixture-tabs');nav.innerHTML='';controllers.forEach((c,i)=>{const b=document.createElement('button');b.textContent=c.tabBarItem?.text||'Home';b.onclick=()=>this.setSelectedIndex(i);nav.append(b)});return 'native initializer return'}
+  setSelectedIndex(index){const c=this.childViewControllers[index];const content=document.getElementById('fixture-content');content.innerHTML='';this.currentController=c;if(c.__autopilotSettingsNavigation){content.append(c.getView().getRootElement());c.root.viewDidAppear()}else content.textContent=c.tabBarItem.text;}
+}
+const fixture=window.fixture={saved:structuredClone(AutoPilotSpec.defaults),saves:[],registry:new Set(),changelogCount:0,failSave:false};
+Object.assign(fixture.saved,{excludedPlayerIds:['9001'],excludedLeagueIds:[],excludedNationIds:[]});
+const api=fixture.api={defaults:{...structuredClone(AutoPilotSpec.defaults),excludedPlayerIds:[],excludedLeagueIds:[],excludedNationIds:[]},version:'1.11.3',stylesheetUrl:'../../page/autopilot-settings.css',fields:AutoPilotSpec.fields,
+  registry:fixture.registry,normalize:s=>structuredClone(s),load:async()=>structuredClone(fixture.saved),
+  save:async s=>{if(fixture.failSave)throw Error('Fixture storage rejected save');fixture.saved=structuredClone(s);fixture.saves.push(structuredClone(s));for(const state of fixture.registry)state.sync(s)},
+  catalog:async type=>type==='leagues'?[{id:'13',name:'Premier League'},{id:'16',name:'Ligue 1'},{id:'999',name:'<League & Club>'}]:[{id:'14',name:'France'},{id:'45',name:'England'}],
+  iconUrl:(type,id)=>type==='leagues'?(id==='999'?'javascript:alert(1)':`https://example.test/leagues/dark/${id}.png`):type==='nations'?`https://example.test/flags/dark/${id}.png`:null,
+  label:(type,id)=>({id,name:type==='players'?'Test Player':type==='leagues'?'League '+id:'Nation '+id,rating:type==='players'?84:undefined}),
+  changelog:async()=>fixture.changelogCount++};
+fixture.classes={EAView,EAViewController,UTGameFlowNavigationController,UTTabBarItemView,UTGameTabBarController};
+AutopilotSettingsTab.installNative(api,fixture.classes);
+const controllers=['Home','SBC','Enhancer','Paletools'].map((text,index)=>{const n=new UTGameFlowNavigationController();n.tabBarItem=new UTTabBarItemView();n.tabBarItem.setTag(index);n.tabBarItem.setText(text);return n});
+fixture.tabs=new UTGameTabBarController();fixture.returnValue=fixture.tabs.initWithViewControllers(controllers);fixture.tabs.setSelectedIndex(4);
+</script>

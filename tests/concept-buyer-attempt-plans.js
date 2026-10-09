@@ -184,5 +184,131 @@ assert.doesNotMatch(
   /const attempts = \(Array\.isArray\(row\.buyPrices\)[\s\S]*?\.sort\(\(a, b\) => a - b\)/,
   "legacy sorted max-buy attempt construction should not drive buyer execution",
 );
+assert.match(
+  bridgeSource,
+  /conceptBuyerState\.stopping = true;[\s\S]*?updateConceptBuyerSummary\(\);/,
+  "clicking stop should move the buyer into a visible stopping state",
+);
+assert.match(
+  bridgeSource,
+  /conceptBuyerState\.stopping[\s\S]*?"Stopping\.\.\."/,
+  "the start button should show Stopping... after the user stops buying",
+);
+assert.match(
+  bridgeSource,
+  /conceptBuyerState\.checking[\s\S]*?"Stop Checking"[\s\S]*?"Check Market"/,
+  "the market checker should expose a stop action while checking",
+);
+assert.match(
+  bridgeSource,
+  /if \(conceptBuyerState\.checking\) \{\s*conceptBuyerState\.cancelToken\.cancelled = true;\s*conceptBuyerState\.stopping = true;\s*updateConceptBuyerSummary\(\);/,
+  "clicking the market checker while active should enter a visible stopping state",
+);
+assert.match(
+  bridgeSource,
+  /row\.status === "Checking"[\s\S]*?setConceptBuyerRowStatus\(row, "Stopped", "Stopped by user"\)/,
+  "stopped market checks should mark the active checking row as stopped instead of failed",
+);
+assert.match(
+  bridgeSource,
+  /isConceptBuyerTerminalStatus\(row\.status\)/,
+  "completed rows should be terminal without locking unfinished rows",
+);
+assert.match(
+  bridgeSource,
+  /const scrollTop = readNumeric\(scroller\?\.scrollTop\)[\s\S]*?restoreConceptBuyerScroll\(scrollTop\);/,
+  "row re-renders should preserve the concept buyer list scroll position",
+);
+assert.match(
+  bridgeSource,
+  /conceptBuyerState\.checking = false;\s*conceptBuyerState\.stopping = false;\s*renderConceptBuyerRows\(\);/,
+  "completed market checks should repaint rows after controls become editable again",
+);
+assert.match(
+  bridgeSource,
+  /conceptBuyerState\.buying = false;\s*conceptBuyerState\.stopping = false;\s*renderConceptBuyerRows\(\);/,
+  "completed or stopped buys should repaint rows after controls become editable again",
+);
+assert.doesNotMatch(
+  bridgeSource,
+  /row\.enabled && row\.status === "Bought"/,
+  "solver-plan reconciliation must resolve bought rows even after they become disabled terminal rows",
+);
+assert.match(
+  bridgeSource,
+  /const buildApplyDefinitionLookup = \(lookup\) =>/,
+  "single-solver concept preview apply should build a definition lookup for newly owned concepts",
+);
+assert.match(
+  bridgeSource,
+  /definitionLookup\?\.get\?\.\(definitionId\)[\s\S]*?return ensureSquadPlayerApi\(ownedMatch\);/,
+  "concept preview refs should resolve to owned cards by definition before falling back to fake concept items",
+);
+assert.match(
+  bridgeSource,
+  /clearPlayersSnapshotCache\(\{\s*clearWarmLookup: true,\s*bumpRevision: true,\s*\}\);/,
+  "successful concept buys should invalidate warm player snapshots before the next solve",
+);
+assert.match(
+  bridgeSource,
+  /includeTransfer: includeUnassigned/,
+  "player snapshots should include transfer-pile cards when unassigned recovery is enabled",
+);
+assert.match(
+  bridgeSource,
+  /\.concat\(Array\.isArray\(transferPlayers\) \? transferPlayers : \[\]\)/,
+  "solver payloads should merge transfer-pile cards into the candidate pool",
+);
+assert.match(
+  bridgeSource,
+  /let recentOwnedPlayer = null;[\s\S]*?recentOwnedPlayer = toPlainPlayer\([\s\S]*?buyResult\.item \?\? target,[\s\S]*?rememberRecentConceptPurchaseDefinition\([\s\S]*?row\.definitionId,[\s\S]*?recentOwnedPlayer,[\s\S]*?\);[\s\S]*?clearPlayersSnapshotCache\(\{/,
+  "successful concept buys should remember the newly owned player before invalidating solver snapshots",
+);
+assert.match(
+  bridgeSource,
+  /const recentConceptDefinitionIds = getRecentConceptPurchaseDefinitionIds\(\);[\s\S]*?fetchRecentConceptPurchasePlayers\({[\s\S]*?definitionIds: recentConceptDefinitionIds/,
+  "solver payloads should run targeted recovery for recently bought concept definitions",
+);
+assert.match(
+  bridgeSource,
+  /const payloadPlayers = mergePlayersByItemId\([\s\S]*?mergedPlayers,[\s\S]*?recentConceptPlayers,[\s\S]*?\);[\s\S]*?players: payloadPlayers/,
+  "recently bought concept cards found by targeted lookup should be merged into the solver payload",
+);
+assert.match(
+  bridgeSource,
+  /const rememberedPlayers = getRecentConceptPurchasePlayersSnapshot\(ids\);[\s\S]*?mergePlayersByItemId\([\s\S]*?rememberedPlayers,[\s\S]*?toPlainList\(clubItems, "club"\)/,
+  "targeted recovery should keep just-bought player snapshots while inventory fetches catch up",
+);
+assert.match(
+  bridgeSource,
+  /ownedPlayerCount: conceptDiagnostics\.ownedPlayerCount \?\? null,[\s\S]*?recentConceptPurchases:[\s\S]*?conceptDiagnostics\.recentConceptPurchases \?\? null/,
+  "concept retry diagnostics should expose owned-pool and recent-purchase evidence",
+);
+assert.match(
+  bridgeSource,
+  /includeTransfer: usesUnassignedLookup/,
+  "solution apply lookup should search transfer-pile cards when unassigned lookup is active",
+);
+const solverSource = readFileSync("solver/solver.js", "utf8");
+assert.match(
+  solverSource,
+  /const initialConceptCount = initialEval\?\.value\?\.conceptCount \?\? 0;[\s\S]*?initialConceptCount <= 0 &&/,
+  "low-impact refinement should not activate while the solved squad still contains concepts",
+);
+assert.match(
+  solverSource,
+  /const hasConceptsInWorkingSquad = working\.some\(isConceptPlayer\);[\s\S]*?\? \[ownedNearPivot, lowRated, cheapConcepts, nearPivot\]/,
+  "refinement should consider owned candidates before more concepts when minimizing a concept squad",
+);
+assert.match(
+  solverSource,
+  /const conceptCountBeforeRefine = getConceptUsageMetrics\([\s\S]*?const conceptCleanupBudgetMs =[\s\S]*?conceptCountBeforeRefine > 0[\s\S]*?localTimeBudgetMs: refineLocalTimeBudgetMs/,
+  "concept cleanup should receive its own local refinement budget instead of sharing the short polish budget",
+);
+assert.match(
+  solverSource,
+  /conceptCountBeforeRefine > 0[\s\S]*?Math\.max\([\s\S]*?refineMaxSingleIterations[\s\S]*?conceptCountBeforeRefine \+ 6/,
+  "concept cleanup should allow enough single swaps to replace each concept row",
+);
 
 console.log("\n[concept-buyer-test] all checks passed");

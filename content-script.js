@@ -34,6 +34,7 @@ const waitForInjectionHost = ({ timeoutMs = 3000 } = {}) =>
 const injectPageScript = async (path, { type = "module" } = {}) =>
   new Promise(async (resolve, reject) => {
     const script = document.createElement("script");
+    script.charset = "utf-8";
     const src = chrome.runtime.getURL(path);
     script.src = src;
     if (type) script.type = type;
@@ -128,6 +129,11 @@ const exposeExtensionMetadataToPage = async () => {
 void (async () => {
   if (window !== window.top) return;
   await exposeExtensionMetadataToPage();
+  // Load the isolated UI before the bridge registers its native EA controller.
+  for (const path of ["page/autopilot-settings-controls.js", "page/autopilot-settings-tab.js"]) {
+    try { await injectPageScript(path, { type: null }); }
+    catch { await requestBackgroundBridgeInject(path); }
+  }
   const bridgePath = "page/ea-data-bridge.js";
   try {
     await injectPageScript(bridgePath, { type: "module" });
@@ -631,7 +637,7 @@ const handlePriceBridgeRequest = async (data) => {
     chrome.runtime.sendMessage(
       {
         type: PRICE_BRIDGE_REQUEST,
-        payload: { ids: Array.isArray(ids) ? ids : [], requestId },
+        payload: { ids: Array.isArray(ids) ? ids : [], requestId, platform: data?.platform === "pc" ? "pc" : "console" },
       },
       (response) => {
         const runtimeError = chrome.runtime?.lastError;

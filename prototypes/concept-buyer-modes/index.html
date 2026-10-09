@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Concept Buyer Mode Prototypes</title>
+  <link rel="stylesheet" href="prototype-base.css">
+  <style>
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 12px;
+      padding: 18px;
+    }
+
+    .card {
+      min-height: 170px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      border: 1px solid rgba(148, 163, 184, 0.24);
+      border-radius: 8px;
+      background: #0e141b;
+      padding: 14px;
+      color: inherit;
+      text-decoration: none;
+    }
+
+    .card strong {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 15px;
+    }
+
+    .card p {
+      margin: 0;
+      color: rgba(203, 213, 225, 0.66);
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.45;
+    }
+
+    .card .btn {
+      align-self: flex-start;
+      margin-top: 18px;
+    }
+
+    @media (max-width: 980px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="header">
+      <div>
+        <h1 class="title">Concept Buyer Mode Prototypes</h1>
+        <div class="sub">Five possible upgrades for per-player exact price and incremental max-price buying.</div>
+      </div>
+      <div class="summary">
+        <span class="pill">Static HTML</span>
+        <span class="pill good">Per-player modes</span>
+      </div>
+    </section>
+    <section class="grid">
+      <a class="card" href="design-1-inline-modes.html">
+        <span>
+          <strong>1. Inline Modes</strong>
+          <p>Closest to the current table. Each row owns a compact Exact or Incremental control.</p>
+        </span>
+        <span class="btn primary">Open</span>
+      </a>
+      <a class="card" href="design-2-expandable-rows.html">
+        <span>
+          <strong>2. Expandable Rows</strong>
+          <p>Clean table surface with a detailed editor drawer per player.</p>
+        </span>
+        <span class="btn primary">Open</span>
+      </a>
+      <a class="card" href="design-3-split-planner.html">
+        <span>
+          <strong>3. Split Planner</strong>
+          <p>Left player list, right selected-player editor and generated buy ladder.</p>
+        </span>
+        <span class="btn primary">Open</span>
+      </a>
+      <a class="card" href="design-4-queue-first.html">
+        <span>
+          <strong>4. Queue First</strong>
+          <p>Shows the actual execution queue so caps and exact prices are never ambiguous.</p>
+        </span>
+        <span class="btn primary">Open</span>
+      </a>
+      <a class="card" href="design-5-spreadsheet.html">
+        <span>
+          <strong>5. Spreadsheet</strong>
+          <p>Dense operator view with direct editable columns for many concepts.</p>
+        </span>
+        <span class="btn primary">Open</span>
+      </a>
+    </section>
+  </main>
+</body>
+</html>

@@ -4,15 +4,10 @@ const WORKER_RESPONSE = "SOLVER_WORKER_RESPONSE";
 const BRIDGE_INJECT_REQUEST = "EA_PAGE_BRIDGE_INJECT";
 const PRICE_BRIDGE_REQUEST = "EA_DATA_PRICE_REQUEST";
 const FUTGG_PLAYERS_BRIDGE_REQUEST = "EA_DATA_FUTGG_PLAYERS_REQUEST";
-const ALLOWED_BRIDGE_INJECT_PATHS = new Set(["page/ea-data-bridge.js"]);
+const ALLOWED_BRIDGE_INJECT_PATHS = new Set(["page/ea-data-bridge.js", "page/autopilot-settings-controls.js", "page/autopilot-settings-tab.js"]);
 const EA_WEBAPP_URL_RE =
   /^https:\/\/www\.ea\.com(?:\/[^/?#]+)?\/ea-sports-fc\/ultimate-team\/web-app(?:\/|$)/i;
-// FUT.GG exposes its data per game year: .../player-prices/<year>/ and
-// .../players/v2/<year>/. FC27 serves its own data set at year 27, so this must
-// track the Web App generation rather than stay pinned to a past season.
-const FUT_GG_GAME_YEAR = "27";
-const FUT_PRICE_API_URL = `https://www.fut.gg/api/fut/player-prices/${FUT_GG_GAME_YEAR}/`;
-const FUT_PLAYERS_API_URL = `https://www.fut.gg/api/fut/players/v2/${FUT_GG_GAME_YEAR}/`;
+const FUT_PLAYERS_API_URL = "https://www.fut.gg/api/fut/players/v2/27/";
 const FUT_PRICE_CACHE_TTL_MS = 10 * 60 * 1000;
 const FUT_PRICE_BATCH_SIZE = 10;
 const FUT_PRICE_MIN_GAP_MS = 450;
@@ -38,6 +33,9 @@ import {
   buildSolverContext,
   solveSquad,
 } from "./solver/solver.js?v=2026-02-22d";
+import { solvePointsChallenge } from "./solver/points-solver.js";
+import { createFutggPriceClient } from "./page/futgg-prices.js";
+const futggPriceClient = createFutggPriceClient();
 
 console.log("[EA Data] Background loaded", {
   mode: "direct",
@@ -74,6 +72,10 @@ const handleSolverRequest = async (message, sendResponse) => {
       const context = buildSolverContext(workerPayload || {});
       const result = solveSquad(context);
       sendResponse({ ok: true, data: result });
+      return;
+    }
+    if (workerType === "SOLVE_POINTS") {
+      sendResponse({ ok: true, data: solvePointsChallenge(workerPayload || {}) });
       return;
     }
     sendResponse({ ok: true, data: { ok: true } });
@@ -180,10 +182,10 @@ const paceFutPlayersFetch = async () => {
   futPlayersLastFetchAt = Date.now();
 };
 
-const markFutPriceBatchMissing = (ids, reason = null) => {
+const markFutPriceBatchMissing = (ids, reason = null, platform = "console") => {
   const now = Date.now();
   for (const id of ids || []) {
-    futPriceCache.set(String(id), {
+    futPriceCache.set(`${platform}:${id}`, {
       eaId: String(id),
       price: null,
       missing: true,
@@ -193,77 +195,33 @@ const markFutPriceBatchMissing = (ids, reason = null) => {
   }
 };
 
-const fetchFutPriceBatchOnce = async (ids) => {
+const fetchFutPriceBatchOnce = async (ids, platform = "console") => {
   await paceFutPriceFetch();
-  const url = new URL(FUT_PRICE_API_URL);
-  url.searchParams.set("ids", ids.join(","));
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => {
-    try {
-      controller.abort();
-    } catch {}
-  }, FUT_PRICE_FETCH_TIMEOUT_MS);
-  let response;
-  try {
-    response = await fetch(url.toString(), {
-      method: "GET",
-      credentials: "omit",
-      cache: "no-store",
-      headers: { accept: "application/json" },
-      signal: controller.signal,
-    });
-  } finally {
-    clearTimeout(timeoutId);
-  }
-  if (!response.ok)
-    throw new Error(`FUT.GG price request failed (${response.status})`);
-  const json = await response.json();
-  const rows = Array.isArray(json?.data) ? json.data : [];
+  const prices = await futggPriceClient.getPrices(ids, platform);
   const now = Date.now();
-  const returnedIds = new Set();
-  for (const row of rows) {
-    const id = String(row?.eaId ?? "").trim();
-    if (!id) continue;
-    returnedIds.add(id);
-    futPriceCache.set(id, {
-      eaId: id,
-      platform: row?.platform ?? null,
-      price: Number.isFinite(Number(row?.price)) ? Number(row.price) : null,
-      isExtinct: Boolean(row?.isExtinct),
-      isSbc: Boolean(row?.isSbc),
-      isObjective: Boolean(row?.isObjective),
-      isUntradeable: Boolean(row?.isUntradeable),
-      priceUpdatedAt: row?.priceUpdatedAt ?? null,
+  for (const id of ids) {
+    futPriceCache.set(`${platform}:${id}`, {
+      ...(prices.get(String(id)) ?? { eaId: String(id), platform, price: null, missing: true }),
       cachedAt: now,
     });
   }
-  for (const id of ids) {
-    if (!returnedIds.has(String(id))) {
-      futPriceCache.set(id, {
-        eaId: id,
-        price: null,
-        missing: true,
-        cachedAt: now,
-      });
-    }
-  }
 };
 
-const fetchFutPriceBatch = async (ids) => {
+const fetchFutPriceBatch = async (ids, platform = "console") => {
   try {
-    await fetchFutPriceBatchOnce(ids);
+    await fetchFutPriceBatchOnce(ids, platform);
     return { ok: true, ids };
   } catch (firstError) {
     try {
       await delayMs(FUT_PRICE_RETRY_DELAY_MS);
-      await fetchFutPriceBatchOnce(ids);
+      await fetchFutPriceBatchOnce(ids, platform);
       return { ok: true, ids, retried: true };
     } catch (secondError) {
       const message =
         secondError?.name === "AbortError"
           ? "FUT.GG price request timed out"
           : secondError?.message || firstError?.message || "FUT.GG price request failed";
-      markFutPriceBatchMissing(ids, message);
+      markFutPriceBatchMissing(ids, message, platform);
       return { ok: false, ids, error: message };
     }
   }
@@ -271,10 +229,11 @@ const fetchFutPriceBatch = async (ids) => {
 
 const handlePriceRequest = (message, sendResponse) => {
   const ids = normalizePriceIds(message?.payload?.ids);
+  const platform = message?.payload?.platform === "pc" ? "pc" : "console";
   const requestId = message?.payload?.requestId ?? null;
   const now = Date.now();
   const missing = ids.filter((id) => {
-    const cached = futPriceCache.get(id);
+    const cached = futPriceCache.get(`${platform}:${id}`);
     const cachedAt = Number(cached?.cachedAt) || 0;
     return !cached || now - cachedAt > FUT_PRICE_CACHE_TTL_MS;
   });
@@ -297,7 +256,7 @@ const handlePriceRequest = (message, sendResponse) => {
           batchCount: batch.length,
           ids: batch,
         });
-        const batchResult = await fetchFutPriceBatch(batch);
+        const batchResult = await fetchFutPriceBatch(batch, platform);
         console.log("[EA Data] Price batch done", {
           requestId,
           ok: Boolean(batchResult?.ok),
@@ -313,7 +272,7 @@ const handlePriceRequest = (message, sendResponse) => {
       }
       const prices = {};
       for (const id of ids) {
-        const cached = futPriceCache.get(id);
+        const cached = futPriceCache.get(`${platform}:${id}`);
         if (cached) prices[id] = cached;
       }
       console.log("[EA Data] Price request complete", {
@@ -376,7 +335,8 @@ const normalizeFutPlayersRequest = (payload = {}) => {
     if (!Number.isFinite(numeric)) continue;
     filters[key] = Math.floor(numeric);
   }
-  return { pages, rarityIds, priceGte, sorts, filters };
+  const platform = payload?.platform === "pc" ? "pc" : "console";
+  return { pages, rarityIds, priceGte, sorts, filters, platform };
 };
 
 const fetchFutPlayersPage = async ({
@@ -385,6 +345,7 @@ const fetchFutPlayersPage = async ({
   priceGte,
   sorts,
   filters = {},
+  platform = "console",
 }) => {
   await paceFutPlayersFetch();
   const url = new URL(FUT_PLAYERS_API_URL);
@@ -395,7 +356,7 @@ const fetchFutPlayersPage = async ({
     if (key === "rarity_id" || key === "price__gte") continue;
     url.searchParams.set(key, String(value));
   }
-  url.searchParams.set("sorts", sorts);
+  url.searchParams.set("sorts", platform === "pc" ? sorts.replace(/(^|,)(-?)current_price/g, "$1$2pc_current_price") : sorts);
   const controller = new AbortController();
   const timeoutId = setTimeout(() => {
     try {
@@ -416,7 +377,10 @@ const fetchFutPlayersPage = async ({
   }
   if (!response.ok)
     throw new Error(`FUT.GG players request failed (${response.status})`);
-  return response.json();
+  const json = await response.json();
+  const rows = (Array.isArray(json?.data) ? json.data : []).filter(row => String(row?.game) === "27");
+  const prices = rows.length ? await futggPriceClient.getPrices(rows.map(row => String(row.eaId)), platform) : new Map();
+  return { ...json, data: rows.map(row => ({ ...row, ...prices.get(String(row.eaId)) })) };
 };
 
 const handleFutPlayersRequest = (message, sendResponse) => {
@@ -446,6 +410,7 @@ const handleFutPlayersRequest = (message, sendResponse) => {
               priceGte: params.priceGte,
               sorts: params.sorts,
               filters: params.filters,
+              platform: params.platform,
             });
             const pageRows = Array.isArray(json?.data) ? json.data : [];
             rows.push(...pageRows);

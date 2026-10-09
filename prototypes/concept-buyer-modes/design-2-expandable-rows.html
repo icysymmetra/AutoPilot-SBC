@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Concept Buyer Design 2 - Expandable Rows</title>
+  <link rel="stylesheet" href="prototype-base.css">
+  <style>
+    .rows {
+      display: grid;
+      gap: 10px;
+    }
+
+    .row {
+      border: 1px solid rgba(148, 163, 184, 0.18);
+      border-radius: 8px;
+      background: #111922;
+      overflow: hidden;
+    }
+
+    .row-head {
+      display: grid;
+      grid-template-columns: 34px minmax(190px, 1fr) 112px 180px 140px 130px;
+      align-items: center;
+      gap: 12px;
+      padding: 11px 12px;
+    }
+
+    .drawer {
+      display: grid;
+      grid-template-columns: 250px minmax(0, 1fr);
+      gap: 14px;
+      padding: 13px 14px 15px 58px;
+      border-top: 1px solid rgba(148, 163, 184, 0.14);
+      background: #0d141c;
+    }
+
+    .mode-card {
+      border: 1px solid rgba(95, 121, 150, 0.5);
+      border-radius: 8px;
+      padding: 11px;
+      background: #0b121a;
+    }
+
+    .mode-card h3 {
+      margin: 0 0 8px;
+      font-size: 12px;
+      font-weight: 950;
+    }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .preview {
+      display: grid;
+      gap: 8px;
+      align-content: start;
+    }
+
+    .preview-line {
+      min-height: 34px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      border: 1px solid rgba(148, 163, 184, 0.15);
+      border-radius: 6px;
+      padding: 0 10px;
+      background: rgba(255, 255, 255, 0.03);
+      font-size: 12px;
+      font-weight: 850;
+    }
+
+    .field-caption {
+      display: block;
+      margin-bottom: 3px;
+      color: rgba(203, 213, 225, 0.52);
+      font-size: 9px;
+      font-weight: 950;
+      text-transform: uppercase;
+    }
+
+    @media (max-width: 900px) {
+      .row-head,
+      .drawer,
+      .form-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .drawer {
+        padding-left: 14px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="header">
+      <div>
+        <h1 class="title">Expandable Rows</h1>
+        <div class="sub">The main list stays clean; opening a row exposes that player's exact or incremental configuration.</div>
+      </div>
+      <div class="summary">
+        <span class="pill">Current fields preserved</span>
+        <span class="pill">Focused edit</span>
+        <span class="pill good">Readable</span>
+      </div>
+    </section>
+    <section class="toolbar">
+      <span class="pill">Name / Fetched Price / Availability / Status remain visible</span>
+      <button class="btn primary">Expand All</button>
+      <button class="btn">Collapse All</button>
+      <button class="btn success">Start Buying</button>
+    </section>
+    <section class="panel">
+      <div class="rows">
+        <article class="row">
+          <div class="row-head">
+            <input type="checkbox" checked>
+            <div class="player"><div class="name">Lazar Carevic</div><div class="meta">GK - TOTS - ID 50572482</div></div>
+            <div><span class="field-caption">Fetched Price</span><span class="coins">15,000</span></div>
+            <div class="mode-toggle"><span class="active">Exact</span><span>Max</span></div>
+            <div><span class="field-caption">Availability</span><span class="status">Not checked</span></div>
+            <div><span class="field-caption">Status</span><span class="status ready">3 prices</span></div>
+          </div>
+          <div class="drawer">
+            <div class="mode-card">
+              <h3>Exact Price Attempts</h3>
+              <div class="note">Only buy when a listed buy-now price exactly matches one of these values.</div>
+            </div>
+            <div class="preview">
+              <div class="attempts">
+                <span class="chip index" data-step="1">15,000</span>
+                <span class="chip index" data-step="2">15,250</span>
+                <span class="chip index" data-step="3">15,500</span>
+                <span class="chip">+</span>
+              </div>
+              <div class="preview-line"><span>Next action</span><span>Search exact 15,000</span></div>
+            </div>
+          </div>
+        </article>
+        <article class="row">
+          <div class="row-head">
+            <input type="checkbox" checked>
+            <div class="player"><div class="name">Luis Milla</div><div class="meta">CM - TOTS - ID 50573849</div></div>
+            <div><span class="field-caption">Fetched Price</span><span class="coins">15,500</span></div>
+            <div class="mode-toggle"><span>Exact</span><span class="active">Max</span></div>
+            <div><span class="field-caption">Availability</span><span class="status buying">Checking @ 15,750</span></div>
+            <div><span class="field-caption">Status</span><span class="status buying">Generated ladder</span></div>
+          </div>
+          <div class="drawer">
+            <div class="mode-card">
+              <h3>Incremental Max Price</h3>
+              <div class="note">Each generated value is a maximum buy cap. The buyer takes the cheapest card at or below that cap.</div>
+            </div>
+            <div class="form-grid">
+              <label class="field"><span>Start cap</span><input value="15,500"></label>
+              <label class="field"><span>Max cap</span><input value="18,500"></label>
+              <label class="field"><span>Step</span><input value="250"></label>
+            </div>
+            <div class="preview" style="grid-column: 2;">
+              <div class="attempts">
+                <span class="chip index" data-step="1">15,500</span>
+                <span class="chip index" data-step="2">15,750</span>
+                <span class="chip index" data-step="3">16,000</span>
+                <span class="chip index" data-step="4">16,250</span>
+                <span class="chip">+9</span>
+              </div>
+              <div class="preview-line"><span>Legal EA step</span><span>Rounded to 250 around this range</span></div>
+            </div>
+          </div>
+        </article>
+      </div>
+    </section>
+    <section class="footer">
+      <button class="btn">Close</button>
+      <button class="btn primary">Check Visible Rows</button>
+      <button class="btn success">Start Buying</button>
+    </section>
+  </main>
+</body>
+</html>

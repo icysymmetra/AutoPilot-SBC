@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Concept Buyer Design 5 - Spreadsheet</title>
+  <link rel="stylesheet" href="prototype-base.css">
+  <style>
+    .sheet {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      font-size: 12px;
+    }
+
+    .sheet th,
+    .sheet td {
+      border: 1px solid rgba(148, 163, 184, 0.14);
+      padding: 8px;
+      vertical-align: top;
+      background: #101922;
+    }
+
+    .sheet th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: #151d26;
+      color: rgba(203, 213, 225, 0.82);
+      font-size: 10px;
+      font-weight: 950;
+      text-align: left;
+      text-transform: uppercase;
+    }
+
+    .sheet th:nth-child(1) { width: 38px; text-align: center; }
+    .sheet th:nth-child(2) { width: 190px; }
+    .sheet th:nth-child(3) { width: 92px; }
+    .sheet th:nth-child(4) { width: 120px; }
+    .sheet th:nth-child(5) { width: 105px; }
+    .sheet th:nth-child(6) { width: 105px; }
+    .sheet th:nth-child(7) { width: 105px; }
+    .sheet th:nth-child(8) { width: 220px; }
+    .sheet th:nth-child(9) { width: 136px; }
+    .sheet th:nth-child(10) { width: 118px; }
+
+    .cell-input,
+    .cell-select {
+      width: 100%;
+      height: 30px;
+      border: 1px solid rgba(95, 121, 150, 0.62);
+      border-radius: 5px;
+      background: #0b121a;
+      color: rgba(242, 247, 251, 0.96);
+      padding: 0 7px;
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .panel {
+      padding: 0;
+      overflow: auto;
+      max-height: 590px;
+    }
+
+    .inline-help {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      width: 100%;
+    }
+
+    .help-card {
+      border: 1px solid rgba(148, 163, 184, 0.16);
+      border-radius: 6px;
+      padding: 8px 9px;
+      background: rgba(255, 255, 255, 0.035);
+      color: rgba(203, 213, 225, 0.66);
+      font-size: 11px;
+      font-weight: 800;
+      line-height: 1.35;
+    }
+
+    @media (max-width: 980px) {
+      .inline-help {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="header">
+      <div>
+        <h1 class="title">Spreadsheet</h1>
+        <div class="sub">Dense mode for many concepts. Every row has direct mode and parameter columns.</div>
+      </div>
+      <div class="summary">
+        <span class="pill">Fast editing</span>
+        <span class="pill">Name, fetched price, availability, status retained</span>
+        <span class="pill warn">Dense</span>
+      </div>
+    </section>
+    <section class="toolbar">
+      <div class="inline-help">
+        <div class="help-card">Mode Exact: `Exact Prices` is a comma-separated list of direct buy-now values.</div>
+        <div class="help-card">Mode Max: `Start`, `Max`, and `Step` generate cap attempts.</div>
+        <div class="help-card">Step values are rounded into legal EA market increments.</div>
+        <div class="help-card">Preview always shows the first generated attempts before buying.</div>
+      </div>
+    </section>
+    <section class="panel">
+      <table class="sheet">
+        <thead>
+          <tr>
+            <th>Use</th>
+            <th>Player</th>
+            <th>Fetched Price</th>
+            <th>Mode</th>
+            <th>Start</th>
+            <th>Max</th>
+            <th>Step</th>
+            <th>Exact Prices</th>
+            <th>Availability</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><input type="checkbox" checked></td>
+            <td><div class="player"><div class="name">Lazar Carevic</div><div class="meta">GK - ID 50572482</div></div></td>
+            <td class="coins">15,000</td>
+            <td><select class="cell-select"><option>Exact</option><option>Max</option></select></td>
+            <td><input class="cell-input" value=""></td>
+            <td><input class="cell-input" value=""></td>
+            <td><input class="cell-input" value=""></td>
+            <td><input class="cell-input" value="15000, 15250, 15500"></td>
+            <td><span class="status">Not checked</span></td>
+            <td><span class="status ready">Ready</span></td>
+          </tr>
+          <tr>
+            <td><input type="checkbox" checked></td>
+            <td><div class="player"><div class="name">Luis Milla</div><div class="meta">CM - ID 50573849</div></div></td>
+            <td class="coins">15,500</td>
+            <td><select class="cell-select"><option>Max</option><option>Exact</option></select></td>
+            <td><input class="cell-input" value="15500"></td>
+            <td><input class="cell-input" value="18500"></td>
+            <td><input class="cell-input" value="250"></td>
+            <td><input class="cell-input" value=""></td>
+            <td><span class="status buying">Checking @ 15,750</span></td>
+            <td><span class="status buying">13 caps</span></td>
+          </tr>
+          <tr>
+            <td><input type="checkbox" checked></td>
+            <td><div class="player"><div class="name">Oyarzabal</div><div class="meta">ST - ID 100893438</div></div></td>
+            <td class="coins">15,500</td>
+            <td><select class="cell-select"><option>Exact</option><option>Max</option></select></td>
+            <td><input class="cell-input" value=""></td>
+            <td><input class="cell-input" value=""></td>
+            <td><input class="cell-input" value=""></td>
+            <td><input class="cell-input" value="15500, 16000"></td>
+            <td><span class="status bought">1 card</span></td>
+            <td><span class="status bought">Bought</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+    <section class="footer">
+      <button class="btn">Close</button>
+      <button class="btn primary">Validate Rows</button>
+      <button class="btn success">Start Buying</button>
+    </section>
+  </main>
+</body>
+</html>

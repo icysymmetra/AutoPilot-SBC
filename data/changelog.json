@@ -2,6 +2,109 @@
   "version": 1,
   "releases": [
     {
+      "version": "1.12.1",
+      "date": "2026-10-09",
+      "headline": "FC27 solvers and a dedicated Autopilot tab",
+      "summary": "Adds points SBC solving, the approved settings tab, EA exclusion icons and the FC27 solver repairs.",
+      "details": [
+        "Restored Solve Squad clicks and updated FC27 inventory, unassigned, transfer-list, response, requirement and reward hooks.",
+        "Added Solve Points using EA eligibility and item scores. Continue through EA Review Selection; automatic points submission through set and sequence solving is not supported.",
+        "Added a native Autopilot tab with Player pool, Card types and Exclusions pages, rating sliders and presets, all seven options, Save, Discard and Reset.",
+        "Added official EA league badges and nation flags. Embedded styles prevent an unstyled opening flash and remain isolated from the host app.",
+        "Challenge settings, Multi Solve and sequence steps now use Bronze, Silver and Gold choices, with compatible saved preferences.",
+        "Updated FC27 concept data and console/PC CDN prices, improved concept purchase recovery and owned-player refinement, and included the required worker modules.",
+        "Fixed maximum squad rating validation, including Room To Grow, while keeping minimum and exact rating requirements intact.",
+        "Updated packaging to include every runtime module. Settings-script failures no longer prevent solver startup."
+      ]
+    },
+    {
+      "version": "1.11.8",
+      "date": "2026-10-09",
+      "headline": "FC27 quality choices in every solver panel",
+      "summary": "Challenge settings, Multi Solve and sequence steps now use Bronze, Silver and Gold choices.",
+      "details": [
+        "Replaced the six legacy Common/Rare pickers with three quality tiles, matching the Autopilot tab.",
+        "Existing preferences remain readable. Selecting a quality enables both compatible stored bucket keys.",
+        "Solve summaries use quality names, and each panel keeps at least one quality enabled."
+      ]
+    },
+    {
+      "version": "1.11.7",
+      "date": "2026-10-09",
+      "headline": "Maximum squad rating requirements fixed",
+      "summary": "The squad solver accepts valid bronze squads below a maximum rating, including Room To Grow.",
+      "details": [
+        "Maximum team-rating requirements no longer trigger rating improvement or incorrect rating-shortfall diagnostics.",
+        "Validation respects minimum, maximum and exact ratings, including separate lower and upper bounds."
+      ]
+    },
+    {
+      "version": "1.11.6",
+      "date": "2026-10-09",
+      "headline": "EA nation flags in exclusions",
+      "summary": "Nation exclusions now show EA's official country and region flags.",
+      "details": [
+        "Flag URLs come from EA's current asset helper and nation IDs, with their original proportions.",
+        "Nation and league icons share lazy loading and a fallback for unavailable assets."
+      ]
+    },
+    {
+      "version": "1.11.5",
+      "date": "2026-10-09",
+      "headline": "EA league badges in exclusions",
+      "summary": "League exclusions show the same official badges as the transfer-market selector.",
+      "details": [
+        "League badge URLs come from EA's current asset helper and league IDs, including its dark theme variant.",
+        "Badges preserve their proportions and transparent backgrounds. Unavailable assets use a fallback without repeated failed requests."
+      ]
+    },
+    {
+      "version": "1.11.4",
+      "date": "2026-10-09",
+      "headline": "Settings open without an unstyled flash",
+      "summary": "The full settings stylesheet is available before the Autopilot tab opens.",
+      "details": [
+        "Styles ship with the settings controls and are inserted synchronously in the detached shadow root before the view is displayed.",
+        "Opening the tab no longer requests a separate stylesheet or switches through a loading overlay."
+      ]
+    },
+    {
+      "version": "1.11.3",
+      "date": "2026-10-09",
+      "headline": "A dedicated Autopilot settings tab",
+      "summary": "Manage global solver defaults from the new Autopilot tab in the FC web app.",
+      "details": [
+        "Added Player pool, Card types and Exclusions pages using the approved settings design.",
+        "Connected Save, Discard, Reset, rating presets, all seven pool toggles and real EA league, nation and player exclusions to existing preferences.",
+        "Global settings moved out of EA Settings. Challenge, multi, set and points solver controls keep their existing workflows.",
+        "Native navigation preserves other extension tabs. Styles are isolated from EA and other extensions."
+      ]
+    },
+    {
+      "version": "1.11.2",
+      "date": "2026-10-08",
+      "headline": "Points SBCs and FC27 concept data",
+      "summary": "Added Solve Points in the native Work Area and repaired FC27 concept catalog and prices.",
+      "details": [
+        "Solve Points searches EA-eligible owned players, uses EA item scores, respects solver filters and the native selection limit, and preserves existing selections.",
+        "Points selections continue through EA Review Selection and its score submission flow. Automatic set and sequence submission of points SBCs is not supported.",
+        "Updated concept player data to FC27 and replaced the retired price API with current console and PC CDN prices.",
+        "Added the missing concept module to worker resources and guardrails against unsupported SBC requirements."
+      ]
+    },
+    {
+      "version": "1.11.1",
+      "date": "2026-10-08",
+      "headline": "FC27 web app hook fixes",
+      "summary": "Restored Solve Squad clicks and updated FC27 inventory and reward hooks.",
+      "details": [
+        "Fixed Solve Squad inheriting the disabled state of EA's Exchange Players button.",
+        "Updated transfer list and unassigned item fetching to use FC27's current services.",
+        "Updated item pile and SBC requirement enum lookup to use EA's current runtime values.",
+        "Fixed response payload handling and updated reward dialog detection."
+      ]
+    },
+    {
       "version": "1.12",
       "date": "2026-09-20",
       "headline": "FC27 price and transfer list fixes",

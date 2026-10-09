@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Concept Buyer Design 1 - Inline Modes</title>
+  <link rel="stylesheet" href="prototype-base.css">
+  <style>
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      font-size: 12px;
+    }
+
+    th,
+    td {
+      padding: 11px 10px;
+      border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+      vertical-align: middle;
+    }
+
+    th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: #151d26;
+      color: rgba(203, 213, 225, 0.82);
+      font-size: 10px;
+      font-weight: 900;
+      text-align: left;
+      text-transform: uppercase;
+    }
+
+    th:nth-child(1) { width: 48px; text-align: center; }
+    th:nth-child(2) { width: 210px; }
+    th:nth-child(3) { width: 112px; }
+    th:nth-child(4) { width: 150px; }
+    th:nth-child(5) { width: 360px; }
+    th:nth-child(6) { width: 120px; }
+    th:nth-child(7) { width: 130px; }
+
+    td:first-child {
+      text-align: center;
+    }
+
+    .buy-config {
+      display: grid;
+      gap: 8px;
+    }
+
+    .increment-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px;
+    }
+
+    .mini-field {
+      display: grid;
+      gap: 3px;
+    }
+
+    .mini-field span {
+      color: rgba(203, 213, 225, 0.58);
+      font-size: 9px;
+      font-weight: 900;
+      text-transform: uppercase;
+    }
+
+    .mini-field input {
+      width: 100%;
+      height: 30px;
+      border: 1px solid rgba(95, 121, 150, 0.62);
+      border-radius: 6px;
+      background: #0b121a;
+      color: rgba(242, 247, 251, 0.96);
+      padding: 0 7px;
+      font-size: 12px;
+      font-weight: 900;
+    }
+
+    .panel {
+      padding: 0;
+      overflow: auto;
+      max-height: 590px;
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="header">
+      <div>
+        <h1 class="title">Inline Modes</h1>
+        <div class="sub">Minimal change from the current panel. Exact prices and incremental caps live in the same row.</div>
+      </div>
+      <div class="summary">
+        <span class="pill">3 selected</span>
+        <span class="pill warn">Mixed modes</span>
+        <span class="pill good">2 ready</span>
+      </div>
+    </section>
+    <section class="toolbar">
+      <span class="pill">Name, fetched price, availability, and status stay visible</span>
+      <span class="pill">Exact buys only at listed prices</span>
+      <span class="pill">Incremental buys cheapest listing up to each cap</span>
+      <button class="btn primary">Check Market</button>
+      <button class="btn success">Start Buying</button>
+    </section>
+    <section class="panel">
+      <table>
+        <thead>
+          <tr>
+            <th>Use</th>
+            <th>Player</th>
+            <th>Fetched Price</th>
+            <th>Mode</th>
+            <th>Buy Plan</th>
+            <th>Availability</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><input type="checkbox" checked></td>
+            <td>
+              <div class="player">
+                <div class="name">Lazar Carevic</div>
+                <div class="meta">GK - ID 50572482 - TOTS</div>
+              </div>
+            </td>
+            <td class="coins">15,000</td>
+            <td>
+              <div class="mode-toggle"><span class="active">Exact</span><span>Max</span></div>
+            </td>
+            <td>
+              <div class="attempts">
+                <span class="chip index" data-step="1">15,000</span>
+                <span class="chip index" data-step="2">15,250</span>
+                <span class="chip index" data-step="3">15,500</span>
+                <span class="chip">+</span>
+              </div>
+            </td>
+            <td><span class="status">Not checked</span></td>
+            <td><span class="status ready">Ready</span></td>
+          </tr>
+          <tr>
+            <td><input type="checkbox" checked></td>
+            <td>
+              <div class="player">
+                <div class="name">Luis Milla</div>
+                <div class="meta">CM - ID 50573849 - TOTS</div>
+              </div>
+            </td>
+            <td class="coins">15,500</td>
+            <td>
+              <div class="mode-toggle"><span>Exact</span><span class="active">Max</span></div>
+            </td>
+            <td>
+              <div class="buy-config">
+                <div class="increment-grid">
+                  <label class="mini-field"><span>Start</span><input value="15,500"></label>
+                  <label class="mini-field"><span>Max</span><input value="18,000"></label>
+                  <label class="mini-field"><span>Step</span><input value="250"></label>
+                </div>
+                <div class="note">Queue: 15,500 -> 15,750 -> 16,000 -> ... -> 18,000</div>
+              </div>
+            </td>
+            <td><span class="status buying">Checking @ 15,750</span></td>
+            <td><span class="status buying">Checking</span></td>
+          </tr>
+          <tr>
+            <td><input type="checkbox" checked></td>
+            <td>
+              <div class="player">
+                <div class="name">Oyarzabal</div>
+                <div class="meta">ST - ID 100893438 - TOTS</div>
+              </div>
+            </td>
+            <td class="coins">15,500</td>
+            <td>
+              <div class="mode-toggle"><span class="active">Exact</span><span>Max</span></div>
+            </td>
+            <td>
+              <div class="attempts">
+                <span class="chip index" data-step="1">15,500</span>
+                <span class="chip index" data-step="2">16,000</span>
+                <span class="chip index" data-step="3">16,500</span>
+              </div>
+            </td>
+            <td><span class="status bought">1 card</span></td>
+            <td><span class="status bought">Bought 15,500</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+    <section class="footer">
+      <button class="btn">Close</button>
+      <button class="btn primary">Check Market</button>
+      <button class="btn success">Start Buying</button>
+    </section>
+  </main>
+</body>
+</html>

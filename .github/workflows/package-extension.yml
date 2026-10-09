@@ -10,6 +10,8 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: write
@@ -35,6 +37,9 @@ jobs:
         with:
           node-version: 20
 
+      - name: Check packaging configuration
+        run: node --test tests/package-extension-workflow.cjs
+
       # Only ship what the extension loads at runtime. Anything else (tests,
       # docs, prototypes, replay data) bloats the package and risks rejection.
       - name: Stage runtime files
@@ -43,11 +48,17 @@ jobs:
           rm -rf dist
           mkdir -p dist/page dist/solver dist/data dist/icons
           cp manifest.json background.js content-script.js dist/
-          cp page/ea-data-bridge.js page/ea-data-bridge.css dist/page/
+          cp page/ea-data-bridge.js \
+             page/ea-data-bridge.css \
+             page/autopilot-settings-controls.js \
+             page/autopilot-settings-tab.js \
+             page/autopilot-settings.css \
+             page/futgg-prices.js dist/page/
           cp solver/solver.js \
              solver/chemistry.js \
              solver/constraint-compiler.js \
              solver/concept-players.js \
+             solver/points-solver.js \
              solver/worker.js \
              solver/glpk.js \
              solver/glpk.wasm dist/solver/

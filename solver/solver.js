@@ -675,7 +675,6 @@ export const buildSolverContext = ({
   }
   if (normalizedFilters.excludeSpecial) {
     normalizedPlayers = normalizedPlayers.filter((player) => {
-      if (isUnassignedBypass(player)) return true;
       if (!player?.isSpecial || player?.isTotwOrTots) return true;
       if (player?.id == null) return false;
       return lockedSlotPlayerIds.has(String(player.id));
@@ -883,11 +882,17 @@ const getSquadSize = (rules, fallback) => {
 };
 
 const getTeamRatingTarget = (rules) => {
-  const rule = rules.find((item) => item.type === "team_rating");
-  if (!rule) return null;
-  const target = getRuleCount(rule);
-  if (target == null) return null;
-  return { target, rule: rule.raw };
+  // Rating improvement and shortfall diagnostics need a lower bound. A maximum
+  // is only a ceiling, never a reason to raise a valid cheap squad's rating.
+  let result = null;
+  for (const rule of rules) {
+    if (rule.type !== "team_rating" || rule.op === "max") continue;
+    const target = getRuleCount(rule);
+    if (target != null && (result == null || target > result.target)) {
+      result = { target, rule: rule.raw };
+    }
+  }
+  return result;
 };
 
 const getInformRequirementBounds = (rules, squadSize) => {
@@ -1412,6 +1417,8 @@ const getStoragePreferenceScore = (player) => {
   if (player?.hasClubDuplicate) return 1;
   return 0;
 };
+
+const getConceptSelectionPenalty = (player) => (isConceptPlayer(player) ? 1 : 0);
 
 const compareBucketPlayers = (a, b, options = {}) => {
   const avoidSpecials = options?.avoidSpecials !== false;
@@ -2036,6 +2043,7 @@ const prefillPlayers = (
       if (!check.ok) continue;
       const preferenceScore = getPreferenceScore(candidate);
       const seedBiasScore = getSeedPoolBiasScore(candidate, options?.seed);
+      const conceptPenalty = getConceptSelectionPenalty(candidate);
       const storagePreferenceScore = getStoragePreferenceScore(candidate);
       const distance = useRatingHint
         ? Math.abs((toNumber(candidate?.rating) ?? 0) - ratingHintPivot)
@@ -2051,6 +2059,11 @@ const prefillPlayers = (
         (check.penalty === best.penalty &&
           preferenceScore === best.preferenceScore &&
           seedBiasScore === best.seedBiasScore &&
+          conceptPenalty < best.conceptPenalty) ||
+        (check.penalty === best.penalty &&
+          preferenceScore === best.preferenceScore &&
+          seedBiasScore === best.seedBiasScore &&
+          conceptPenalty === best.conceptPenalty &&
           (useRatingHint
             ? distance < best.distance ||
               (distance === best.distance &&
@@ -2066,6 +2079,7 @@ const prefillPlayers = (
           penalty: check.penalty,
           preferenceScore,
           seedBiasScore,
+          conceptPenalty,
           storagePreferenceScore,
           distance: distance ?? 0,
         };
@@ -2103,6 +2117,9 @@ const prefillPlayers = (
           getSeedPoolBiasScore(a, options?.seed) -
           getSeedPoolBiasScore(b, options?.seed);
         if (seedBiasDiff !== 0) return seedBiasDiff;
+        const conceptDiff =
+          getConceptSelectionPenalty(a) - getConceptSelectionPenalty(b);
+        if (conceptDiff !== 0) return conceptDiff;
         if (useRatingHint) {
           const aDistance = Math.abs((toNumber(a?.rating) ?? 0) - ratingHintPivot);
           const bDistance = Math.abs((toNumber(b?.rating) ?? 0) - ratingHintPivot);
@@ -2386,6 +2403,7 @@ const fillSquad = (squad, pool, squadSize, lockedIds, options = {}) => {
       const check = canAddCandidate(candidate);
       if (!check.ok) continue;
       const preferenceScore = getPreferenceScore(candidate);
+      const conceptPenalty = getConceptSelectionPenalty(candidate);
       const storagePreferenceScore = getStoragePreferenceScore(candidate);
       const distance = useRatingHint
         ? Math.abs((toNumber(candidate?.rating) ?? 0) - ratingHintPivot)
@@ -2397,6 +2415,10 @@ const fillSquad = (squad, pool, squadSize, lockedIds, options = {}) => {
           preferenceScore > best.preferenceScore) ||
         (check.penalty === best.penalty &&
           preferenceScore === best.preferenceScore &&
+          conceptPenalty < best.conceptPenalty) ||
+        (check.penalty === best.penalty &&
+          preferenceScore === best.preferenceScore &&
+          conceptPenalty === best.conceptPenalty &&
           (useRatingHint
             ? distance < best.distance ||
               (distance === best.distance &&
@@ -2411,6 +2433,7 @@ const fillSquad = (squad, pool, squadSize, lockedIds, options = {}) => {
           player: candidate,
           penalty: check.penalty,
           preferenceScore,
+          conceptPenalty,
           storagePreferenceScore,
           distance: distance ?? 0,
         };
@@ -2443,6 +2466,9 @@ const fillSquad = (squad, pool, squadSize, lockedIds, options = {}) => {
       .sort((a, b) => {
         const preferenceDiff = getPreferenceScore(b) - getPreferenceScore(a);
         if (preferenceDiff !== 0) return preferenceDiff;
+        const conceptDiff =
+          getConceptSelectionPenalty(a) - getConceptSelectionPenalty(b);
+        if (conceptDiff !== 0) return conceptDiff;
         if (useRatingHint) {
           const aDistance = Math.abs((toNumber(a?.rating) ?? 0) - ratingHintPivot);
           const bDistance = Math.abs((toNumber(b?.rating) ?? 0) - ratingHintPivot);
@@ -3471,6 +3497,7 @@ const buildRefinementCandidatePool = (
       };
     });
 
+  const hasConceptsInWorkingSquad = working.some(isConceptPlayer);
   const desirabilitySort = (a, b) => {
     if (a.withinWindow !== b.withinWindow) return a.withinWindow ? -1 : 1;
     if (a.rating !== b.rating) return a.rating - b.rating;
@@ -3487,6 +3514,11 @@ const buildRefinementCandidatePool = (
   };
 
   const nearPivot = scored.slice().sort(desirabilitySort).slice(0, maxCandidates);
+  const ownedNearPivot = scored
+    .filter((entry) => !isConceptPlayer(entry.player))
+    .slice()
+    .sort(desirabilitySort)
+    .slice(0, maxCandidates);
   const cheapConcepts = scored
     .filter((entry) => isConceptPlayer(entry.player))
     .slice()
@@ -3508,7 +3540,10 @@ const buildRefinementCandidatePool = (
     .slice(0, Math.min(40, maxCandidates));
   const combined = [];
   const seen = new Set();
-  for (const list of [cheapConcepts, nearPivot, lowRated]) {
+  const candidateLists = hasConceptsInWorkingSquad
+    ? [ownedNearPivot, lowRated, cheapConcepts, nearPivot]
+    : [cheapConcepts, nearPivot, lowRated];
+  for (const list of candidateLists) {
     for (const entry of list) {
       const id = entry?.player?.id ?? null;
       if (id == null || seen.has(id)) continue;
@@ -3779,7 +3814,9 @@ const refineSolvedSquadLocal = (
   let pairEscapes = 0;
   const initialHighRatingScore = initialEval?.value?.highRatingScore ?? 0;
   const initialMaxRating = initialEval?.value?.maxRating ?? 0;
+  const initialConceptCount = initialEval?.value?.conceptCount ?? 0;
   const lowImpactMode =
+    initialConceptCount <= 0 &&
     (initialEval?.value?.ratingExcess ?? 0) <= 0 &&
     (initialEval?.value?.highRatingCount ?? 0) <= 1 &&
     initialMaxRating <= pivot + 3 &&
@@ -3788,11 +3825,15 @@ const refineSolvedSquadLocal = (
       Math.max(0, toNumber(options?.requiredSpecials) ?? 0);
   const effectiveMaxIterations = lowImpactMode
     ? Math.min(maxIterations, 4)
+    : initialConceptCount > 0
+      ? Math.max(maxIterations, 24)
     : maxIterations;
   const effectivePairSearchEnabled =
     options?.pairSearchEnabled !== false && !lowImpactMode;
   const effectiveMaxCandidates = lowImpactMode
     ? Math.min(toNumber(options?.maxCandidates) ?? 60, 36)
+    : initialConceptCount > 0
+      ? Math.max(toNumber(options?.maxCandidates) ?? 60, 140)
     : toNumber(options?.maxCandidates) ?? 60;
 
   const getWorstIndices = () =>
@@ -6071,7 +6112,9 @@ const evaluateRule = (rule, squad, squadSize, evalCtx) => {
   if (rule.type === "team_rating") {
     if (required == null) return null;
     const rating = getSquadRating(squad);
-    if (rating < required) return rule.raw;
+    if (rule.op === "max" && rating > required) return rule.raw;
+    if (rule.op === "exact" && rating !== required) return rule.raw;
+    if (rule.op !== "max" && rule.op !== "exact" && rating < required) return rule.raw;
     return null;
   }
   if (rule.type === "chemistry_points") {
@@ -10691,9 +10734,13 @@ const runPipeline = (inputContext, seed = null, phaseConfig = null) => {
       .map((p) => [String(p.id), p]),
   );
 
-  // Pre-seed squad from occupied field slots so solve/apply stay consistent.
-  // The page layer preserves valid slot items during apply (single-solve flow),
-  // so treating valid occupied slots as pre-seeded avoids overfilling (11 + preserved).
+  const preserveOccupiedSlots = toBooleanSetting(
+    context?.filters?.preserveOccupiedSlots,
+    false,
+  );
+
+  // Pre-seed squad from occupied field slots only when the page layer is going
+  // to preserve occupied items, or when EA marks a slot as locked/non-editable.
   const slotDiag = [];
   for (const slot of context?.squadSlots || []) {
     const item = slot?.item ?? null;
@@ -10719,9 +10766,10 @@ const runPipeline = (inputContext, seed = null, phaseConfig = null) => {
       itemId: idKey,
       concept,
     });
-    // Keep any occupied valid slot, plus explicit lock/brick/non-editable flags.
+    // Keep occupied valid slots only for preserve-mode. Always keep explicit
+    // lock/brick/non-editable flags because those are real slot constraints.
     const keep =
-      isValid === true ||
+      (preserveOccupiedSlots && isValid === true) ||
       isBrick === true ||
       isLocked === true ||
       isEditable === false;
@@ -11313,10 +11361,6 @@ const runPipeline = (inputContext, seed = null, phaseConfig = null) => {
   // Once we have a full squad, clear transient fill locks. Optionally keep
   // preseeded occupied slot players locked for the full solve lifecycle.
   lockedIds.clear();
-  const preserveOccupiedSlots = toBooleanSetting(
-    context?.filters?.preserveOccupiedSlots,
-    false,
-  );
   if (preserveOccupiedSlots && preservedSeedIds.size) {
     for (const id of preservedSeedIds) lockedIds.add(id);
     debugPush?.({
@@ -11759,9 +11803,31 @@ const runPipeline = (inputContext, seed = null, phaseConfig = null) => {
 
   if (solved && context?.optimize?.refineSolvedSquad !== false) {
     const refineStart = Date.now();
+    const conceptCountBeforeRefine = getConceptUsageMetrics(
+      squad.slice(0, squadSize),
+    ).conceptCount;
+    const conceptCleanupBudgetMs =
+      conceptCountBeforeRefine > 0
+        ? Math.min(
+            1500,
+            Math.max(
+              650,
+              conceptCountBeforeRefine * 120 + Math.min(pool.length, 220) * 6,
+            ),
+          )
+        : 0;
+    const defaultRefineBudgetMs =
+      signature?.isCompositionPuzzle || chemistryRequired ? 250 : 120;
     const refineTimeBudgetMs =
       toNumber(context?.optimize?.refineTimeBudgetMs) ??
-      (signature?.isCompositionPuzzle || chemistryRequired ? 250 : 120);
+      Math.max(defaultRefineBudgetMs, conceptCleanupBudgetMs);
+    const refineLocalTimeBudgetMs =
+      conceptCleanupBudgetMs > 0
+        ? Math.max(
+            Math.floor(refineTimeBudgetMs * 0.75),
+            Math.min(refineTimeBudgetMs, conceptCleanupBudgetMs),
+          )
+        : undefined;
     const refineResult = refineSolvedSquad(
       squad,
       normalizedPlayers,
@@ -11781,8 +11847,14 @@ const runPipeline = (inputContext, seed = null, phaseConfig = null) => {
         initialChemistry: chemistry,
         signature,
         timeBudgetMs: refineTimeBudgetMs,
+        localTimeBudgetMs: refineLocalTimeBudgetMs,
         maxSingleIterations:
-          context?.optimize?.refineMaxSingleIterations ?? 6,
+          conceptCountBeforeRefine > 0
+            ? Math.max(
+                toNumber(context?.optimize?.refineMaxSingleIterations) ?? 6,
+                conceptCountBeforeRefine + 6,
+              )
+            : context?.optimize?.refineMaxSingleIterations ?? 6,
         pairSearchEnabled:
           context?.optimize?.refinePairSearchEnabled !== false,
         pairCandidateLimit:
@@ -12373,6 +12445,9 @@ export const solveSquad = (context) => {
     baseContext?.requirementsNormalized || [],
     { fallbackSquadSize },
   );
+  if (compiledConstraints.unsupportedRules.length) {
+    throw new Error("Unsupported SBC requirements: " + compiledConstraints.unsupportedRules.map(rule => rule.keyName ?? rule.label ?? rule.key ?? "unknown").join(", "));
+  }
   const rules = normalizeRules(
     baseContext?.requirementsNormalized || [],
     requirementFlags,

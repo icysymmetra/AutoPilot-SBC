@@ -9,8 +9,7 @@ const EA_WEBAPP_URL_RE =
   /^https:\/\/www\.ea\.com(?:\/[^/?#]+)?\/ea-sports-fc\/ultimate-team\/web-app(?:\/|$)/i;
 const FUT_PLAYERS_API_URL = "https://www.fut.gg/api/fut/players/v2/27/";
 const FUT_PRICE_CACHE_TTL_MS = 10 * 60 * 1000;
-const FUT_PRICE_BATCH_SIZE = 10;
-const FUT_PRICE_MIN_GAP_MS = 450;
+const FUT_PRICE_BATCH_SIZE = 1000;
 const FUT_PRICE_MAX_IDS_PER_REQUEST = 1000;
 const FUT_PRICE_FETCH_TIMEOUT_MS = 10000;
 const FUT_PRICE_RETRY_DELAY_MS = 900;
@@ -149,7 +148,6 @@ const handleBridgeInjectRequest = async (message, sender, sendResponse) => {
 
 const futPriceCache = new Map();
 let futPriceQueue = Promise.resolve();
-let futPriceLastFetchAt = 0;
 let futPlayersQueue = Promise.resolve();
 let futPlayersLastFetchAt = 0;
 
@@ -169,12 +167,6 @@ const normalizePriceIds = (ids) => {
 };
 
 const delayMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-const paceFutPriceFetch = async () => {
-  const waitMs = futPriceLastFetchAt + FUT_PRICE_MIN_GAP_MS - Date.now();
-  if (waitMs > 0) await delayMs(waitMs);
-  futPriceLastFetchAt = Date.now();
-};
 
 const paceFutPlayersFetch = async () => {
   const waitMs = futPlayersLastFetchAt + FUT_PLAYERS_MIN_GAP_MS - Date.now();
@@ -196,7 +188,6 @@ const markFutPriceBatchMissing = (ids, reason = null, platform = "console") => {
 };
 
 const fetchFutPriceBatchOnce = async (ids, platform = "console") => {
-  await paceFutPriceFetch();
   const prices = await futggPriceClient.getPrices(ids, platform);
   const now = Date.now();
   for (const id of ids) {
@@ -235,7 +226,7 @@ const handlePriceRequest = (message, sendResponse) => {
   const missing = ids.filter((id) => {
     const cached = futPriceCache.get(`${platform}:${id}`);
     const cachedAt = Number(cached?.cachedAt) || 0;
-    return !cached || now - cachedAt > FUT_PRICE_CACHE_TTL_MS;
+    return !cached || Boolean(cached.error) || now - cachedAt > FUT_PRICE_CACHE_TTL_MS;
   });
   console.log("[EA Data] Price request received", {
     requestId,

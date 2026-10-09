@@ -57,3 +57,14 @@ test('the public navigation entry selects the actual controller index',()=>{
   tabs.initWithViewControllers(list);tabs.childViewControllers=list;
   assert.equal(api.open(),true);assert.equal(tabs.selected,2);
 });
+
+test('rebuilding the EA tab bar directs public navigation to the current controller',()=>{
+  const {api,classes}=setup();api.installNative({},classes);
+  const previous=new classes.UTGameTabBarController(),oldList=[{name:'EA'}];
+  previous.initWithViewControllers(oldList);previous.childViewControllers=oldList;
+  const current=new classes.UTGameTabBarController(),currentList=[{name:'EA'},{name:'Enhancer'}];
+  current.initWithViewControllers(currentList);current.childViewControllers=currentList;
+  assert.equal(api.open(),true);
+  assert.equal(current.selected,2);
+  assert.equal(previous.selected,undefined);
+});

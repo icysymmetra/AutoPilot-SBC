@@ -1232,7 +1232,7 @@
     const key = playerId == null ? null : String(playerId).trim();
     if (!key) return null;
     const cached = playerPriceCache.get(key);
-    if (!cached) return null;
+    if (!cached || cached.error) return null;
     const cachedAt = readNumeric(cached?.cachedAt) ?? 0;
     if (Date.now() - cachedAt > PRICE_CACHE_TTL_MS) return null;
     return cached;
@@ -2183,7 +2183,12 @@
     const clubPile = ItemPile.CLUB ?? 7;
     let moveError = null;
     try {
-      await observableToPromise(services.Item.move(item, clubPile));
+      const moveResult = await observableToPromise(
+        services.Item.move(item, clubPile),
+      );
+      if (moveResult?.error || moveResult?.success === false) {
+        moveError = String(moveResult?.error ?? moveResult?.status ?? "move_failed");
+      }
     } catch (error) {
       moveError = String(error?.message ?? error);
     }
@@ -2655,7 +2660,7 @@
     const ids = rows.map((row) => row.definitionId).filter((id) => id != null);
     if (!ids.length) return;
     for (const row of rows) {
-      if (row.status === "Owned") continue;
+      if (isConceptBuyerTerminalStatus(row.status)) continue;
       row.status = "Ready";
       row.message = "Fetching price";
     }
@@ -2664,7 +2669,7 @@
       await requestPlayerPricesForIds(ids);
     } catch {}
     for (const row of rows) {
-      if (row.status === "Owned") continue;
+      if (isConceptBuyerTerminalStatus(row.status)) continue;
       const meta = readCachedPlayerPrice(row.definitionId);
       const price = readNumeric(meta?.price);
       row.price = price;
@@ -3134,6 +3139,12 @@
           const search = await searchConceptTransferMarket(row, maxBuy, {
             exactPrice: attempt.exactPrice,
           });
+          // Stop may be clicked while EA's search is outstanding. Check again
+          // before issuing a bid, which cannot be cancelled once it is sent.
+          if (conceptBuyerState.cancelToken.cancelled) {
+            cancelled = true;
+            break;
+          }
           logConceptBuyerEvent("buy_attempt_search", {
             rowId: row.id,
             definitionId: row.definitionId,
@@ -4302,6 +4313,22 @@
     });
   };
 
+  const forgetRecentConceptPurchaseItems = (items = []) => {
+    const spentIds = new Set(
+      items.filter((item) => item?.id != null).map((item) => String(item.id)),
+    );
+    if (!spentIds.size) return;
+    for (const [key, entry] of recentConceptPurchasesByDefinition.entries()) {
+      const players = (entry?.players ?? []).filter(
+        (player) => !spentIds.has(String(player?.id)),
+      );
+      if (!players.length) recentConceptPurchasesByDefinition.delete(key);
+      else if (players.length !== entry.players.length) {
+        recentConceptPurchasesByDefinition.set(key, { ...entry, players });
+      }
+    }
+  };
+
   const getRecentConceptPurchaseDefinitionIds = () => {
     const now = Date.now();
     const ids = [];
@@ -4920,7 +4947,14 @@
       return false;
     });
     if (!movable.length) return 0;
-    await observableToPromise(services.Item.move(movable, clubPile));
+    const result = await observableToPromise(services.Item.move(movable, clubPile));
+    if (result?.success === false || result?.error != null) {
+      const error = new Error(
+        `Could not move players to club (status ${result?.status ?? "?"}, error ${result?.error ?? "?"}).`,
+      );
+      error.code = "EA_ITEM_MOVE_FAILED";
+      throw error;
+    }
     await delay(0.5);
     return movable.length;
   };
@@ -7871,9 +7905,9 @@
   const PREF_STORAGE_KEY = "eaData.preferences.v1";
   const PREF_BRIDGE_TIMEOUT_MS = 3500;
   const PRICE_BRIDGE_TIMEOUT_MS = 25000;
-  const PRICE_BRIDGE_BATCH_SIZE = 10;
+  const PRICE_BRIDGE_BATCH_SIZE = 1000;
   const PRICE_BRIDGE_MAX_CONCURRENT_BATCHES = 2;
-  const PRICE_BRIDGE_BATCH_DELAY_MS = 350;
+  const PRICE_BRIDGE_BATCH_DELAY_MS = 0;
   const PRICE_CACHE_TTL_MS = 10 * 60 * 1000;
   const PAGE_BRIDGE_TIMEOUT_MS = 12000;
   const PREF_CACHE_TTL_MS = 10 * 1000;
@@ -10566,6 +10600,7 @@
       { minGapMs: SBC_AUTOMATION_SUBMIT_MIN_GAP_MS, maxAttempts: 1 },
     );
     if (result?.success === true) {
+      forgetRecentConceptPurchaseItems(squadItems);
       markPendingCompletionAutoFetch({
         setId: challenge?.setId ?? setEntity?.id ?? null,
         challengeId: challenge?.id ?? null,

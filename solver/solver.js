@@ -5634,6 +5634,7 @@ const enforceUniqueDefinitions = (
       seenDefs.add(defKey);
       continue;
     }
+    if (options?.lockedIds?.has(player.id)) continue;
 
     const candidates = (pool || [])
       .filter((candidate) => candidate && candidate.id != null)
@@ -10642,10 +10643,7 @@ const runPipeline = (inputContext, seed = null, phaseConfig = null) => {
     compiledConstraints,
   );
   timingsMs.normalizeRules = Date.now() - normalizeRulesStart;
-  const squadSize = Math.min(
-    getSquadSize(rules, fallbackSquadSize),
-    normalizedPlayers.length,
-  );
+  const squadSize = getSquadSize(rules, fallbackSquadSize);
   const signature =
     context?.signature || buildChallengeSignature(rules, squadSize);
   const ratingRequirement = getTeamRatingTarget(rules);
@@ -11348,6 +11346,7 @@ const runPipeline = (inputContext, seed = null, phaseConfig = null) => {
     rules,
     squadSize,
     debugPush,
+    { lockedIds: preservedSeedIds },
   );
   if (dedupeReplaced > 0) {
     debugPush?.({
@@ -11361,7 +11360,7 @@ const runPipeline = (inputContext, seed = null, phaseConfig = null) => {
   // Once we have a full squad, clear transient fill locks. Optionally keep
   // preseeded occupied slot players locked for the full solve lifecycle.
   lockedIds.clear();
-  if (preserveOccupiedSlots && preservedSeedIds.size) {
+  if (preservedSeedIds.size) {
     for (const id of preservedSeedIds) lockedIds.add(id);
     debugPush?.({
       stage: "preseed",
@@ -11534,7 +11533,7 @@ const runPipeline = (inputContext, seed = null, phaseConfig = null) => {
       )
     : [];
 
-  const hardLockedIds = new Set();
+  const hardLockedIds = new Set(lockedIds);
 
   let chemistry = null;
   if (chemistryRequired) {
@@ -11743,6 +11742,17 @@ const runPipeline = (inputContext, seed = null, phaseConfig = null) => {
       const failedRule = evaluateRule(rule, workingSquad, squadSize, evalCtx);
       if (failedRule) failing.push(failedRule);
     }
+    if (workingSquad.length < squadSize &&
+        !failing.some(rule => normalizeRequirementType(rule) === "players_in_squad")) {
+      failing.push({ type: "players_in_squad", op: "exact", count: squadSize,
+        label: `Number of players: ${squadSize}` });
+    }
+    for (const id of preservedSeedIds) {
+      if (!workingSquad.some(player => player.id === id)) {
+        failing.push({ type: "locked_player", value: id,
+          label: `Preserved player ${id} is missing from the squad` });
+      }
+    }
     return failing;
   };
 
@@ -11755,6 +11765,7 @@ const runPipeline = (inputContext, seed = null, phaseConfig = null) => {
       squadSize,
       debugPush,
       {
+        lockedIds: preservedSeedIds,
         chemistryRequired,
         slotsForChemistry,
         chemistryTargets,
@@ -12179,6 +12190,7 @@ const runPipeline = (inputContext, seed = null, phaseConfig = null) => {
       squadSize,
       debugPush,
       {
+        lockedIds: preservedSeedIds,
         chemistryRequired,
         slotsForChemistry,
         chemistryTargets,
@@ -12429,9 +12441,6 @@ const runPipeline = (inputContext, seed = null, phaseConfig = null) => {
 export const solveSquad = (context) => {
   const baseContext = context && typeof context === "object" ? context : {};
   const players = Array.isArray(baseContext?.players) ? baseContext.players : [];
-  if (!players.length) {
-    return runPipeline(baseContext, null, null);
-  }
 
   const requirementFlags =
     baseContext?.requirementFlags ||
@@ -12448,6 +12457,9 @@ export const solveSquad = (context) => {
   if (compiledConstraints.unsupportedRules.length) {
     throw new Error("Unsupported SBC requirements: " + compiledConstraints.unsupportedRules.map(rule => rule.keyName ?? rule.label ?? rule.key ?? "unknown").join(", "));
   }
+  if (!players.length) {
+    return runPipeline(baseContext, null, null);
+  }
   const rules = normalizeRules(
     baseContext?.requirementsNormalized || [],
     requirementFlags,
@@ -12455,10 +12467,7 @@ export const solveSquad = (context) => {
     compiledConstraints,
   );
   const normalizedPlayers = normalizePlayers(players);
-  const squadSize = Math.min(
-    getSquadSize(rules, fallbackSquadSize),
-    normalizedPlayers.length,
-  );
+  const squadSize = getSquadSize(rules, fallbackSquadSize);
   const signature = buildChallengeSignature(rules, squadSize);
   const noRatingConservation = getNoRatingConservationProfile(
     rules,

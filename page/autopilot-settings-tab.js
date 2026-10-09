@@ -259,7 +259,8 @@
         item.setTag(tag);item.setText('Autopilot');item.addClass('icon-transfer');item.addClass('ea-data-autopilot-tab');
         navigation.tabBarItem=item;controllers.push(navigation);
       }
-      const result=previous.call(this,controllers,...args);native.instances.add(this);return result;
+      const result=previous.call(this,controllers,...args);
+      native.instances.delete(this);native.instances.add(this);return result;
     };
     wrapper.__autopilotSettingsNative=true;proto.initWithViewControllers=wrapper;
     if(!document.getElementById('ea-data-autopilot-tab-icon')){
@@ -270,7 +271,8 @@
     return true;
   }
   const open = () => {
-    for(const tabs of native?.instances||[]){
+    // EA can recreate the tab bar after sign-in. Prefer the most recent one.
+    for(const tabs of [...(native?.instances||[])].reverse()){
       const index=tabs.childViewControllers?.findIndex(controller=>controller?.__autopilotSettingsNavigation);
       if(index>=0&&typeof tabs.setSelectedIndex==='function'){tabs.setSelectedIndex(index);return true;}
     }

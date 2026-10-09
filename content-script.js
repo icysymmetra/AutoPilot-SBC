@@ -132,7 +132,16 @@ void (async () => {
   // Load the isolated UI before the bridge registers its native EA controller.
   for (const path of ["page/autopilot-settings-controls.js", "page/autopilot-settings-tab.js"]) {
     try { await injectPageScript(path, { type: null }); }
-    catch { await requestBackgroundBridgeInject(path); }
+    catch (scriptError) {
+      try { await requestBackgroundBridgeInject(path); }
+      catch (backgroundError) {
+        console.warn("[EA Data] Settings asset injection failed; continuing solver startup", {
+          path,
+          scriptError: scriptError?.message ?? String(scriptError),
+          backgroundError: backgroundError?.message ?? String(backgroundError),
+        });
+      }
+    }
   }
   const bridgePath = "page/ea-data-bridge.js";
   try {

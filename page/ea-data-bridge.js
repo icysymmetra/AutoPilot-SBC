@@ -9603,7 +9603,8 @@
     if (typeof EAView === "undefined" || typeof EAViewController === "undefined" ||
         typeof UTGameTabBarController === "undefined" ||
         typeof UTGameFlowNavigationController === "undefined" ||
-        typeof UTTabBarItemView === "undefined" || !window.AutopilotSettingsTab) return false;
+        typeof UTTabBarItemView === "undefined" || !window.AutopilotSettingsTab ||
+        !window.AutopilotSettingsControls || !window.AutopilotSettingsCSS) return false;
     const metadata = readExtensionMetadata();
     return window.AutopilotSettingsTab.installNative({
       version: metadata.version || "1.11.8",

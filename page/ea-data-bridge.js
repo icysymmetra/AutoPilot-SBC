@@ -6646,6 +6646,22 @@
     });
   };
 
+  // Shared by the set solver and sequence planner. Keep this outside either
+  // overlay so a sequence cache miss can fetch native challenge entities.
+  const getSortedSetChallenges = async (setId) => {
+    const normalizedSetId = readNumeric(setId);
+    if (normalizedSetId == null) return [];
+    const cached = getPrefetchedSetChallenges(normalizedSetId);
+    if (Array.isArray(cached) && cached.length) return cached;
+    void prefetchSetChallengeInfo(normalizedSetId, {
+      reason: "set-solver-fetch",
+    }).catch(() => {});
+    const raw = await getChallengesBySetIdsRaw([normalizedSetId]);
+    const sorted = sortSetChallengesForSolver(raw);
+    upsertPrefetchedSetChallenges(normalizedSetId, sorted);
+    return sorted;
+  };
+
   const SET_CHALLENGE_INFO_PREFETCH_TTL_MS = 45 * 1000;
   const setChallengeInfoPrefetchCacheBySetId = new Map();
   const setChallengeInfoPrefetchInFlightBySetId = new Map();
@@ -10009,8 +10025,14 @@
     const remaining = readNumeric(repeatability?.remaining);
     const finiteMode =
       String(repeatability?.mode ?? "FINITE").toUpperCase() !== "UNLIMITED";
-    const noRepeatsLeft =
-      finiteMode && (remaining != null ? remaining <= 0 : setComplete);
+    // FC27 nonrepeatable sets also carry repeats=0. Their completion state,
+    // rather than that repeat counter, determines whether they are available.
+    const nonRepeatable =
+      resolvedSet?.isRepeatable === false ||
+      String(repeatability?.mode ?? "").toUpperCase() === "NON_REPEATABLE";
+    const noRepeatsLeft = nonRepeatable
+      ? setComplete
+      : finiteMode && (remaining != null ? remaining <= 0 : setComplete);
     const challengesCount = readNumeric(
       rawSet?.challengesCount ??
         resolvedSet?.challengesCount ??
@@ -10302,9 +10324,14 @@
       clampMax: 50,
     });
     const remaining = readNumeric(repeatability?.remaining);
-    const finiteMode = String(repeatability?.mode ?? "FINITE") !== "UNLIMITED";
-    const noRepeatsLeft =
-      finiteMode && (remaining != null ? remaining <= 0 : setComplete);
+    const finiteMode =
+      String(repeatability?.mode ?? "FINITE").toUpperCase() !== "UNLIMITED";
+    const nonRepeatable =
+      resolvedSet?.isRepeatable === false ||
+      String(repeatability?.mode ?? "").toUpperCase() === "NON_REPEATABLE";
+    const noRepeatsLeft = nonRepeatable
+      ? setComplete
+      : finiteMode && (remaining != null ? remaining <= 0 : setComplete);
 
     return {
       setId: normalizedSetId,
@@ -15241,20 +15268,6 @@
           setSolveOverlayState.populatePicker(setId);
         }
       } catch {}
-    };
-
-    const getSortedSetChallenges = async (setId) => {
-      const normalizedSetId = readNumeric(setId);
-      if (normalizedSetId == null) return [];
-      const cached = getPrefetchedSetChallenges(normalizedSetId);
-      if (Array.isArray(cached) && cached.length) return cached;
-      void prefetchSetChallengeInfo(normalizedSetId, {
-        reason: "set-solver-fetch",
-      }).catch(() => {});
-      const raw = await getChallengesBySetIdsRaw([normalizedSetId]);
-      const sorted = sortSetChallengesForSolver(raw);
-      upsertPrefetchedSetChallenges(normalizedSetId, sorted);
-      return sorted;
     };
 
     const generateSetSolutions = async () => {

@@ -2,6 +2,19 @@
   "version": 1,
   "releases": [
     {
+      "version": "1.12.3",
+      "date": "2026-10-10",
+      "headline": "Sequence solver set discovery fixes",
+      "summary": "Restores unfinished nonrepeatable SBCs in the sequence planner and fixes related challenge-fetch and completion checks.",
+      "details": [
+        "Unfinished nonrepeatable SBCs now appear in the Single Challenge and Entire Set selectors. FC27's zero repeat counter no longer incorrectly marks them as exhausted.",
+        "Completed nonrepeatable sets and exhausted limited-repeatable sets remain excluded. Refreshing the catalog removes newly completed sets.",
+        "Set and sequence solvers now share the challenge-fetch helper, fixing sequence fetching when no challenge cache is available.",
+        "Submitting one squad no longer closes an unfinished nonrepeatable set because of its zero repeat counter.",
+        "Added six sequence discovery, compatibility, refresh, challenge-fetch and completion regressions to the release gate."
+      ]
+    },
+    {
       "version": "1.12.2",
       "date": "2026-10-10",
       "headline": "Solver, concept buyer and price reliability fixes",

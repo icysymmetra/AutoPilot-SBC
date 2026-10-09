@@ -19,6 +19,7 @@ const suites = [
   'tests/concept-buyer-runtime.cjs',
   'tests/price-bridge-runtime.cjs',
   'tests/review-regressions.cjs',
+  'tests/sequence-discovery.cjs',
   'solver/points-solver.test.mjs',
 ];
 const result = spawnSync(process.execPath, ['--test', ...suites], {

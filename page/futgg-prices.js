@@ -7,7 +7,7 @@ const TTL_MS = 60_000;
 export const decodeFutggPrices = (index, blob, platform = 'console', publishedAt = null) => {
   if (index?.v !== 2 || blob?.v !== 2) throw new Error('Unsupported FUT.GG price blob version');
   if (!Array.isArray(index.d) || !Array.isArray(blob.p) || !Array.isArray(blob.s) ||
-      blob.p.length !== blob.s.length || (blob.p.length && blob.p.length !== index.d.length + 1))
+      blob.p.length !== blob.s.length || blob.p.length !== index.d.length + 1)
     throw new Error('FUT.GG price blob/index length mismatch');
   const rows = new Map();
   let id = Number(index.id0);
@@ -36,6 +36,7 @@ export const createFutggPriceClient = ({ fetcher = fetch, now = Date.now } = {})
   let manifestPending = null;
   const blobs = new Map();
   const pending = new Map();
+  const decodedMarkets = new Map();
   const requestJson = async url => {
     const response = await fetcher(url, {
       credentials: 'omit', cache: 'no-store', headers: { accept: 'application/json' },
@@ -51,12 +52,15 @@ export const createFutggPriceClient = ({ fetcher = fetch, now = Date.now } = {})
       .finally(() => { manifestPending = null; });
     return manifestPending;
   };
-  const loadBlob = async (metadata, key) => {
+  const blobUrl = (metadata, key) => {
     const version = metadata?._version;
     const hash = metadata?.[key];
     if (!Number.isSafeInteger(version) || !/^[a-zA-Z0-9_-]+$/.test(hash || ''))
       throw new Error(`Missing FUT.GG CDN manifest entry: ${key}`);
-    const url = `${CDN_ROOT}/${key}.v${version}.${hash}.json`;
+    return `${CDN_ROOT}/${key}.v${version}.${hash}.json`;
+  };
+  const loadBlob = async (metadata, key) => {
+    const url = blobUrl(metadata, key);
     if (blobs.has(url)) return blobs.get(url);
     if (!pending.has(url)) pending.set(url, requestJson(url).then(data => {
       // Keep only the latest version of each blob, bounding worker memory.
@@ -65,14 +69,33 @@ export const createFutggPriceClient = ({ fetcher = fetch, now = Date.now } = {})
     }).finally(() => pending.delete(url)));
     return pending.get(url);
   };
+  const loadDecodedMarket = (metadata, market) => {
+    const key = market === 'pc' ? 'player-prices-pc-dyn' : 'player-prices-ps5-dyn';
+    const indexUrl = blobUrl(metadata, 'player-prices-index');
+    const pricesUrl = blobUrl(metadata, key);
+    const timestamp = metadata._published_at?.[key];
+    const signature = `${indexUrl}|${pricesUrl}|${timestamp ?? ''}`;
+    const cached = decodedMarkets.get(market);
+    if (cached?.signature === signature) return cached.promise;
+    const entry = { signature, promise: null };
+    entry.promise = Promise.all([loadBlob(metadata, 'player-prices-index'), loadBlob(metadata, key)])
+      .then(([index, prices]) => decodeFutggPrices(index, prices, market,
+        Number.isFinite(timestamp) ? new Date(timestamp * 1000).toISOString() : null))
+      .catch(error => {
+        // Invalid content must be fetched again instead of becoming missing-player data.
+        blobs.delete(indexUrl); blobs.delete(pricesUrl);
+        if (decodedMarkets.get(market) === entry) decodedMarkets.delete(market);
+        throw error;
+      });
+    // One entry per platform bounds memory and shares both loading and decoding.
+    decodedMarkets.set(market, entry);
+    return entry.promise;
+  };
   return {
     async getPrices(ids = [], platform = 'console') {
       const market = platform === 'pc' ? 'pc' : 'console';
       const metadata = await manifest();
-      const key = market === 'pc' ? 'player-prices-pc-dyn' : 'player-prices-ps5-dyn';
-      const [index, prices] = await Promise.all([loadBlob(metadata, 'player-prices-index'), loadBlob(metadata, key)]);
-      const timestamp = metadata._published_at?.[key];
-      const decoded = decodeFutggPrices(index, prices, market, Number.isFinite(timestamp) ? new Date(timestamp * 1000).toISOString() : null);
+      const decoded = await loadDecodedMarket(metadata, market);
       const out = new Map();
       for (const id of ids) {
         const row = decoded.get(String(id));

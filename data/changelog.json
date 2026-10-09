@@ -2,6 +2,22 @@
   "version": 1,
   "releases": [
     {
+      "version": "1.12.2",
+      "date": "2026-10-10",
+      "headline": "Solver, concept buyer and price reliability fixes",
+      "summary": "Fixes defects found during the FC27 release review and adds regression checks before packaging.",
+      "details": [
+        "Empty or undersized player pools no longer produce false solved squads, and unsupported requirements are rejected even when filtering leaves no players.",
+        "EA-locked players remain protected through rating refinement, chemistry optimization and duplicate replacement.",
+        "Stopping the concept buyer during a search prevents a subsequent bid. Late price results cannot reset Bought or Owned rows.",
+        "A purchased player remains Bought if its club move fails, with a pending-move message. Failed squad-apply pile moves now stop with the EA error.",
+        "Successful automated SBC submissions remove spent item IDs from recent-purchase recovery while retaining unspent copies.",
+        "Large price requests share decoded console or PC CDN data and no longer use retired per-ID price pacing. Temporary failures can be retried, and malformed empty blobs are rejected and refetched.",
+        "Opening Autopilot settings selects the current tab bar after EA recreates its navigation.",
+        "Repackaging clears obsolete files from the versioned destination. The release workflow now runs solver, buyer, settings, pricing, points and packaging regression tests before building."
+      ]
+    },
+    {
       "version": "1.12.1",
       "date": "2026-10-09",
       "headline": "FC27 solvers and a dedicated Autopilot tab",

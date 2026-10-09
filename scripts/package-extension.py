@@ -7,7 +7,14 @@ from zipfile import ZipFile, ZIP_DEFLATED
 root = Path(__file__).resolve().parents[1]
 manifest = json.loads((root / 'manifest.json').read_text(encoding='utf-8'))
 version = manifest['version']
-destination = root / 'artifacts' / f'autopilotsbc-fc27-{version}'
+if not isinstance(version, str) or not version or any(part for part in version.split('.') if not part.isdigit()):
+    raise ValueError('Invalid extension version')
+artifacts = (root / 'artifacts').resolve()
+destination = artifacts / f'autopilotsbc-fc27-{version}'
+if destination.is_symlink() or destination.resolve().parent != artifacts:
+    raise ValueError('Package destination is outside the artifacts directory')
+if destination.exists():
+    shutil.rmtree(destination)
 destination.mkdir(parents=True, exist_ok=True)
 for folder in ('page', 'solver', 'icons'):
     shutil.copytree(root / folder, destination / folder, dirs_exist_ok=True,

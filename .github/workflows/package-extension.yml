@@ -37,8 +37,8 @@ jobs:
         with:
           node-version: 20
 
-      - name: Check packaging configuration
-        run: node --test tests/package-extension-workflow.cjs
+      - name: Run runtime and packaging regressions
+        run: node .github/test-runtime.cjs
 
       # Only ship what the extension loads at runtime. Anything else (tests,
       # docs, prototypes, replay data) bloats the package and risks rejection.

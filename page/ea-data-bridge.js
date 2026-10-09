@@ -4114,6 +4114,7 @@
   };
 
   const getTransferListItems = async () => {
+    const emptyTransferList = { unSoldItems: [], availableItems: [] };
     const service = services?.Item ?? services?.Club ?? null;
     const owner =
       typeof service?.requestTransferItems === "function" ||
@@ -9607,7 +9608,7 @@
         !window.AutopilotSettingsControls || !window.AutopilotSettingsCSS) return false;
     const metadata = readExtensionMetadata();
     return window.AutopilotSettingsTab.installNative({
-      version: metadata.version || "1.11.8",
+      version: metadata.version || "1.12.1",
       stylesheetUrl: new URL("page/autopilot-settings.css", metadata.baseUrl).href,
       defaults: getDefaultSolverSettings(),
       fields: SOLVER_TOGGLE_FIELDS,

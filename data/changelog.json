@@ -2,6 +2,22 @@
   "version": 1,
   "releases": [
     {
+      "version": "1.12.1",
+      "date": "2026-10-09",
+      "headline": "FC27 solvers and a dedicated Autopilot tab",
+      "summary": "Adds points SBC solving, the approved settings tab, EA exclusion icons and the FC27 solver repairs.",
+      "details": [
+        "Restored Solve Squad clicks and updated FC27 inventory, unassigned, transfer-list, response, requirement and reward hooks.",
+        "Added Solve Points using EA eligibility and item scores. Continue through EA Review Selection; automatic points submission through set and sequence solving is not supported.",
+        "Added a native Autopilot tab with Player pool, Card types and Exclusions pages, rating sliders and presets, all seven options, Save, Discard and Reset.",
+        "Added official EA league badges and nation flags. Embedded styles prevent an unstyled opening flash and remain isolated from the host app.",
+        "Challenge settings, Multi Solve and sequence steps now use Bronze, Silver and Gold choices, with compatible saved preferences.",
+        "Updated FC27 concept data and console/PC CDN prices, improved concept purchase recovery and owned-player refinement, and included the required worker modules.",
+        "Fixed maximum squad rating validation, including Room To Grow, while keeping minimum and exact rating requirements intact.",
+        "Updated packaging to include every runtime module. Settings-script failures no longer prevent solver startup."
+      ]
+    },
+    {
       "version": "1.11.8",
       "date": "2026-10-09",
       "headline": "FC27 quality choices in every solver panel",
@@ -86,6 +102,17 @@
         "Updated transfer list and unassigned item fetching to use FC27's current services.",
         "Updated item pile and SBC requirement enum lookup to use EA's current runtime values.",
         "Fixed response payload handling and updated reward dialog detection."
+      ]
+    },
+    {
+      "version": "1.12",
+      "date": "2026-09-20",
+      "headline": "FC27 price and transfer list fixes",
+      "summary": "Player prices and your transfer list now read correctly on the FC27 Web App.",
+      "details": [
+        "Fixed player prices so they use the FC27 price data set instead of last season's.",
+        "Fixed reading your transfer list, which came back empty on FC27.",
+        "Cleaned up the transfer list lookup so it falls back safely when a Web App build changes its data shape."
       ]
     },
     {
